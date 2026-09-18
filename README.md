@@ -283,16 +283,37 @@ manual de atendentes, crie `members.json` e descomente o volume no
 O workflow `.github/workflows/deploy.yml` roda **só por disparo manual**
 (Actions → Build & Deploy → Run workflow): lint, build da imagem, push no
 GitHub Container Registry com as tags `latest` e `<sha>`, e deploy via SSH na
-EC2. Na EC2 sobem dois containers, via compose gerado na hora:
+EC2, com compose gerado na hora. A borda (TLS) tem dois modos, escolhidos pela
+variável `EDGE_MODE`:
 
-- `talk-zep-api`: a API, sem porta exposta no host;
-- `talk-zep-caddy`: Caddy nas portas 80/443, que emite o certificado
-  Let's Encrypt para `talk-zep-integration.artigas.app` e faz proxy para a API.
+| `EDGE_MODE` | Quando | O que sobe |
+|---|---|---|
+| `caddy` (padrão) | EC2 dedicada, portas 80/443 livres | `talk-zep-api` sem porta no host + `talk-zep-caddy` em 80/443 emitindo Let's Encrypt para `APP_DOMAIN` |
+| `port` | EC2 compartilhada, já existe um proxy (nginx, traefik, caddy) | só `talk-zep-api`, em `127.0.0.1:APP_PORT` (padrão 8081); o proxy existente faz TLS e encaminha |
 
-Pré-requisitos na EC2: Docker instalado, portas 80 e 443 abertas no security
-group, e o DNS `talk-zep-integration.artigas.app` apontando para o IP público
-(registro A). O certificado é emitido no primeiro deploy, em segundos, desde
-que o DNS já esteja propagado.
+O script confere: em modo `caddy`, se 80 ou 443 já estiverem ocupadas por
+outro serviço, o deploy para com a instrução de usar `port`.
+
+Em modo `port`, um bloco de nginx para o proxy existente:
+
+```nginx
+server {
+    listen 443 ssl http2;
+    server_name talk-zep-integration.artigas.app;
+    # ssl_certificate / ssl_certificate_key conforme o certbot do host
+    location / {
+        proxy_pass http://127.0.0.1:8081;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto https;
+        proxy_read_timeout 60s;
+    }
+}
+```
+
+Pré-requisitos na EC2: Docker instalado e o DNS `talk-zep-integration.artigas.app`
+apontando para o IP público (registro A). Em modo `caddy`, portas 80 e 443
+abertas no security group; o certificado é emitido no primeiro deploy.
 
 Configure em Settings → Secrets and variables → Actions:
 
@@ -301,23 +322,23 @@ Configure em Settings → Secrets and variables → Actions:
 | `EC2_HOST` | IP público ou hostname da EC2 |
 | `EC2_USER` | usuário SSH (`ec2-user` no Amazon Linux, `ubuntu` no Ubuntu) |
 | `SSH_PRIVATE_KEY` | conteúdo completo do `.pem` |
-| `GHCR_READ_TOKEN` | Personal Access Token com escopo `read:packages` (não é o `GITHUB_TOKEN`) |
 | `ZEP_API_KEY`, `WEBHOOK_TOKEN`, `MONGODB_URI` | os mesmos do `.env` |
 | `TALK_API_TOKEN`, `TALK_ORGANIZATION_ID` | opcionais, só leitura |
+| `GHCR_READ_TOKEN` | **opcional.** Personal Access Token com `read:packages`. Sem ele, a EC2 puxa a imagem com o `GITHUB_TOKEN` da própria execução. Só é útil para `docker pull` manual na EC2 fora do workflow (rollback). |
 
-Variáveis (aba Variables), todas opcionais: `APP_DOMAIN` (padrão
-`talk-zep-integration.artigas.app`), `ACME_EMAIL` (e-mail para avisos do
-Let's Encrypt), `ZEP_ORG_GRAPH_ID` (`umbler_kb`), `MONGODB_DB` (`talk_zep`),
-`LOG_LEVEL`, `WORKERS`, `INGEST_GROUP_CHATS`, `INGEST_PRIVATE_NOTES`,
-`ZEP_STRICT_ONTOLOGY`.
+Variáveis (aba Variables), todas opcionais: `EDGE_MODE` (`caddy` ou `port`),
+`APP_PORT` (`8081`), `APP_DOMAIN` (`talk-zep-integration.artigas.app`),
+`ACME_EMAIL` (e-mail para avisos do Let's Encrypt), `ZEP_ORG_GRAPH_ID`
+(`umbler_kb`), `MONGODB_DB` (`talk_zep`), `LOG_LEVEL`, `WORKERS`,
+`INGEST_GROUP_CHATS`, `INGEST_PRIVATE_NOTES`, `ZEP_STRICT_ONTOLOGY`.
 
 Depois do primeiro deploy, a URL a cadastrar no Talk é
 `https://talk-zep-integration.artigas.app/webhooks/talk?token=<WEBHOOK_TOKEN>`
 e o Swagger fica em `https://talk-zep-integration.artigas.app/docs`.
 
 Os arquivos gerados ficam em `~/talk-zep-integration/` na EC2 (diretório
-700): `Caddyfile`, `docker-compose.yml` e `.env.runtime` (600, com os
-segredos). Para voltar uma versão, edite o `image:` do compose para a tag
+700): `docker-compose.yml`, `.env.runtime` (600, com os segredos) e, em modo
+`caddy`, o `Caddyfile`. Para voltar uma versão, edite o `image:` do compose para a tag
 `<sha>` do commit anterior e rode `docker compose up -d` nessa pasta.
 
 ## Implantação

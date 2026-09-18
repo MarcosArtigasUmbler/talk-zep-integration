@@ -2,18 +2,25 @@
 #
 # Disparo manual (workflow_dispatch): deploy e uma decisao explicita.
 # A mesma imagem que roda local (docker compose up) e a que vai para producao.
-# Na EC2 sobem dois containers: a API e um Caddy que termina TLS (Let's Encrypt)
-# para o dominio APP_DOMAIN e faz proxy para a API.
+#
+# Dois modos de borda (variavel EDGE_MODE):
+#   caddy  -- sobe um Caddy em 80/443 que emite TLS (Let's Encrypt) para APP_DOMAIN
+#             e faz proxy para a API. Para EC2 dedicada, sem outro proxy.
+#   port   -- expoe a API so em 127.0.0.1:APP_PORT; o proxy que ja existe no host
+#             (nginx, traefik, caddy...) faz TLS e encaminha para essa porta.
+#             Para EC2 compartilhada com outras aplicacoes.
 #
 # Secrets (Settings > Secrets and variables > Actions > Secrets):
-#   EC2_HOST, EC2_USER, SSH_PRIVATE_KEY, GHCR_READ_TOKEN
+#   EC2_HOST, EC2_USER, SSH_PRIVATE_KEY
 #   ZEP_API_KEY, WEBHOOK_TOKEN, MONGODB_URI
-#   TALK_API_TOKEN, TALK_ORGANIZATION_ID          (opcionais, so leitura)
+#   TALK_API_TOKEN, TALK_ORGANIZATION_ID   (opcionais, so leitura)
+#   GHCR_READ_TOKEN                        (opcional: PAT read:packages; sem ele
+#                                           usa o GITHUB_TOKEN da propria execucao)
 # Variables (aba Variables) -- opcionais, com padrao aqui:
-#   APP_DOMAIN (talk-zep-integration.artigas.app), ACME_EMAIL (vazio),
-#   ZEP_ORG_GRAPH_ID (umbler_kb), MONGODB_DB (talk_zep), LOG_LEVEL (INFO),
-#   WORKERS (4), INGEST_GROUP_CHATS (false), INGEST_PRIVATE_NOTES (true),
-#   ZEP_STRICT_ONTOLOGY (false)
+#   EDGE_MODE (caddy), APP_PORT (8081), APP_DOMAIN (talk-zep-integration.artigas.app),
+#   ACME_EMAIL (vazio), ZEP_ORG_GRAPH_ID (umbler_kb), MONGODB_DB (talk_zep),
+#   LOG_LEVEL (INFO), WORKERS (4), INGEST_GROUP_CHATS (false),
+#   INGEST_PRIVATE_NOTES (true), ZEP_STRICT_ONTOLOGY (false)
 
 name: Build & Deploy
 
@@ -76,8 +83,11 @@ jobs:
       - name: Deploy to EC2 via SSH
         uses: appleboy/ssh-action@v1
         env:
-          GHCR_READ_TOKEN: ${{ secrets.GHCR_READ_TOKEN }}
+          # PAT opcional; sem ele o GITHUB_TOKEN desta execucao puxa a imagem.
+          GHCR_TOKEN: ${{ secrets.GHCR_READ_TOKEN || secrets.GITHUB_TOKEN }}
           GHCR_USER: ${{ github.actor }}
+          EDGE_MODE: ${{ vars.EDGE_MODE || 'caddy' }}
+          APP_PORT: ${{ vars.APP_PORT || '8081' }}
           APP_DOMAIN: ${{ vars.APP_DOMAIN || 'talk-zep-integration.artigas.app' }}
           ACME_EMAIL: ${{ vars.ACME_EMAIL || '' }}
           # --- runtime (segredos) ---
@@ -98,7 +108,7 @@ jobs:
           host: ${{ secrets.EC2_HOST }}
           username: ${{ secrets.EC2_USER }}
           key: ${{ secrets.SSH_PRIVATE_KEY }}
-          envs: IMAGE,PROJECT,GHCR_READ_TOKEN,GHCR_USER,APP_DOMAIN,ACME_EMAIL,ZEP_API_KEY,WEBHOOK_TOKEN,MONGODB_URI,TALK_API_TOKEN,TALK_ORGANIZATION_ID,ZEP_ORG_GRAPH_ID,MONGODB_DB,LOG_LEVEL,WORKERS,INGEST_GROUP_CHATS,INGEST_PRIVATE_NOTES,ZEP_STRICT_ONTOLOGY
+          envs: IMAGE,PROJECT,GHCR_TOKEN,GHCR_USER,EDGE_MODE,APP_PORT,APP_DOMAIN,ACME_EMAIL,ZEP_API_KEY,WEBHOOK_TOKEN,MONGODB_URI,TALK_API_TOKEN,TALK_ORGANIZATION_ID,ZEP_ORG_GRAPH_ID,MONGODB_DB,LOG_LEVEL,WORKERS,INGEST_GROUP_CHATS,INGEST_PRIVATE_NOTES,ZEP_STRICT_ONTOLOGY
           script: |
             set -e
 
@@ -106,6 +116,7 @@ jobs:
               echo "Secrets obrigatorios ausentes: ZEP_API_KEY, MONGODB_URI e WEBHOOK_TOKEN" >&2
               exit 1
             fi
+            case "$EDGE_MODE" in caddy|port) ;; *) echo "EDGE_MODE invalido: $EDGE_MODE (use caddy ou port)" >&2; exit 1;; esac
 
             # docker compose (plugin) sem depender de gerenciador de pacotes.
             if ! docker compose version >/dev/null 2>&1; then
@@ -118,11 +129,24 @@ jobs:
               docker compose version
             fi
 
+            # Em modo caddy, 80/443 precisam estar livres (ou ja serem do nosso Caddy).
+            if [ "$EDGE_MODE" = "caddy" ]; then
+              for PORT in 80 443; do
+                if ss -ltn 2>/dev/null | awk '{print $4}' | grep -Eq "[:.]${PORT}\$"; then
+                  if ! docker ps --format '{{.Names}}' | grep -qx talk-zep-caddy; then
+                    echo "Porta ${PORT} ja esta em uso por outro servico neste host." >&2
+                    echo "Use EDGE_MODE=port e aponte o proxy existente para 127.0.0.1:${APP_PORT}." >&2
+                    exit 1
+                  fi
+                fi
+              done
+            fi
+
             IMAGE=$(echo "$IMAGE" | tr '[:upper:]' '[:lower:]')
 
             # Login no GHCR via config temporario (evita credential helper sem TTY).
             DIR=$(mktemp -d)
-            AUTH=$(printf '%s:%s' "$GHCR_USER" "$GHCR_READ_TOKEN" | base64 -w0)
+            AUTH=$(printf '%s:%s' "$GHCR_USER" "$GHCR_TOKEN" | base64 -w0)
             cat > "$DIR/config.json" <<CONF
             {"auths":{"ghcr.io":{"auth":"$AUTH"}}}
             CONF
@@ -132,14 +156,6 @@ jobs:
             APP_DIR="$HOME/$PROJECT"
             mkdir -p "$APP_DIR"
             chmod 700 "$APP_DIR"
-
-            # Caddy: TLS automatico (Let's Encrypt) para o dominio e proxy para a API.
-            {
-              if [ -n "$ACME_EMAIL" ]; then
-                printf '{\n  email %s\n}\n' "$ACME_EMAIL"
-              fi
-              printf '%s {\n  encode gzip\n  reverse_proxy api:8000\n}\n' "$APP_DOMAIN"
-            } > "$APP_DIR/Caddyfile"
 
             # Variaveis de runtime num arquivo 600 dentro de um diretorio 700.
             # Fica em disco para permitir `docker compose up -d` manual (rollback).
@@ -160,18 +176,27 @@ jobs:
             ENVF
             umask 022
 
-            cat > "$APP_DIR/docker-compose.yml" <<COMPOSE
+            {
+              cat <<COMPOSE
             services:
               api:
                 image: ${IMAGE}:latest
                 container_name: talk-zep-api
                 restart: unless-stopped
                 env_file: .env.runtime
-                expose:
-                  - "8000"
                 logging:
                   driver: json-file
                   options: { max-size: "10m", max-file: "3" }
+            COMPOSE
+              if [ "$EDGE_MODE" = "port" ]; then
+                cat <<COMPOSE
+                ports:
+                  - "127.0.0.1:${APP_PORT}:8000"
+            COMPOSE
+              else
+                cat <<COMPOSE
+                expose:
+                  - "8000"
               caddy:
                 image: caddy:2-alpine
                 container_name: talk-zep-caddy
@@ -193,9 +218,21 @@ jobs:
               caddy_data:
               caddy_config:
             COMPOSE
+              fi
+            } > "$APP_DIR/docker-compose.yml"
+
+            if [ "$EDGE_MODE" = "caddy" ]; then
+              # Caddy: TLS automatico (Let's Encrypt) para o dominio e proxy para a API.
+              {
+                if [ -n "$ACME_EMAIL" ]; then
+                  printf '{\n  email %s\n}\n' "$ACME_EMAIL"
+                fi
+                printf '%s {\n  encode gzip\n  reverse_proxy api:8000\n}\n' "$APP_DOMAIN"
+              } > "$APP_DIR/Caddyfile"
+            fi
 
             cd "$APP_DIR"
-            # Remove containers de versoes antigas do deploy (docker run avulso).
+            # Remove containers de versoes/modos anteriores.
             docker stop talk-zep-api talk-zep-caddy 2>/dev/null || true
             docker rm talk-zep-api talk-zep-caddy 2>/dev/null || true
             docker compose up -d --remove-orphans
@@ -217,4 +254,8 @@ jobs:
 
             docker compose ps
             docker image prune -f
-            echo "Deploy concluido: $IMAGE:latest em https://${APP_DOMAIN}"
+            if [ "$EDGE_MODE" = "port" ]; then
+              echo "Deploy concluido: $IMAGE:latest em 127.0.0.1:${APP_PORT} (proxy externo -> https://${APP_DOMAIN})"
+            else
+              echo "Deploy concluido: $IMAGE:latest em https://${APP_DOMAIN}"
+            fi
