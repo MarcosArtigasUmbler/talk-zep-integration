@@ -8,35 +8,29 @@ async def handle(handler, raw):
     return await handler.handle(ev, event_id=ev.event_id)
 
 
-async def test_message_event_creates_user_thread_facts_and_message(
+async def test_message_event_creates_user_thread_fact_and_message(
     store, settings, members, fake_zep
 ):
     handler = EventHandler(store, settings, members)
     out = await handle(handler, sample_event())
     assert out.status == "done"
 
-    assert fake_zep.of("user.add")[0]["user_id"] == "talk_contact_ct_1"
-    assert fake_zep.of("user.add")[0]["first_name"] == "Carla"
-    assert fake_zep.of("user.add")[0]["last_name"] == "Mendes"
+    add = fake_zep.of("user.add")[0]
+    assert add["user_id"] == "talk_contact_ct_1"
+    assert (add["first_name"], add["last_name"]) == ("Carla", "Mendes")
+    assert add["metadata"]["tags"] == ["Lead quente"]  # tags ficam na metadata, nao no grafo
     assert fake_zep.of("thread.create")[0] == {
         "thread_id": "talk_chat_chat_1",
         "user_id": "talk_contact_ct_1",
     }
 
     facts = fake_zep.of("graph.add_fact_triple")
-    names = sorted(f["fact_name"] for f in facts)
-    assert names == [
-        "ATENDIDO_NO_SETOR",
-        "ATENDIDO_POR",
-        "CONTATO_PELO_CANAL",
-        "TEM_TAG",
-        "TEM_TAG",
-    ]
-    por = next(f for f in facts if f["fact_name"] == "ATENDIDO_POR")
+    assert [f["fact_name"] for f in facts] == ["ATENDIDO_POR"]
+    por = facts[0]
+    assert por["user_id"] == "talk_contact_ct_1"
     assert por["target_node_name"] == "Rafael Torres"
     assert por["source_node_labels"] == ["User"] and por["target_node_labels"] == ["Vendedor"]
     assert por["valid_at"] == "2026-09-18T12:00:00.000Z"
-    assert all(f["user_id"] == "talk_contact_ct_1" for f in facts)
 
     adds = fake_zep.of("thread.add_messages")
     assert len(adds) == 1
@@ -46,8 +40,14 @@ async def test_message_event_creates_user_thread_facts_and_message(
     assert (m.role, m.name) == ("user", "Carla Mendes")
     assert m.content == "Oi, quero saber do plano Professional"
     assert m.created_at == "2026-09-18T12:00:00.000Z"
+    assert m.metadata["sector"] == "Vendas" and m.metadata["channel"] == "WhatsApp Vendas"
     assert adds[0]["strict_ontology"] is None
     assert await store.message_seen("msg_1")
+
+    contact = await store.get_contact("talk_contact_ct_1")
+    assert contact["tags"] == ["Lead quente"]
+    threads = await store.threads_for_user("talk_contact_ct_1")
+    assert threads[0]["sector"] == "Vendas" and threads[0]["member_id"] == "m1"
 
 
 async def test_repeated_event_sends_nothing_new(store, settings, members, fake_zep):
@@ -57,7 +57,6 @@ async def test_repeated_event_sends_nothing_new(store, settings, members, fake_z
     out = await handle(handler, sample_event(EventId="evt_msg_1_retry"))
     assert out.status == "done"
     assert "ja enviada" in out.summary
-    # sem novos fatos, sem novo usuario/thread, sem nova mensagem
     assert len(fake_zep.calls) == before
 
 
@@ -105,7 +104,7 @@ async def test_transfer_sector_change_and_close(store, settings, members, fake_z
     await handle(handler, sample_event())
     n0 = len(fake_zep.of("graph.add_fact_triple"))
 
-    await handle(
+    out = await handle(
         handler,
         sample_event(
             EventId="evt_t", Type="MemberTransfer", content={"OrganizationMember": {"Id": "m9"}}
@@ -115,7 +114,10 @@ async def test_transfer_sector_change_and_close(store, settings, members, fake_z
     assert [f["fact_name"] for f in novo] == ["ATENDIDO_POR"]
     assert novo[0]["target_node_name"] == "Atendente m9"
     assert novo[0]["edge_attributes"] == {"origem": "transferencia"}
+    assert "Atendente m9" in out.summary
 
+    # setor muda: nada vai para o grafo, so para o estado do chat
+    n1 = len(fake_zep.calls)
     await handle(
         handler,
         sample_event(
@@ -124,8 +126,8 @@ async def test_transfer_sector_change_and_close(store, settings, members, fake_z
             content={"Sector": {"Id": "s2", "Name": "Suporte"}},
         ),
     )
-    assert fake_zep.of("graph.add_fact_triple")[-1]["fact_name"] == "ATENDIDO_NO_SETOR"
-    assert fake_zep.of("graph.add_fact_triple")[-1]["target_node_name"] == "Suporte"
+    assert len(fake_zep.calls) == n1
+    assert (await store.threads_for_user("talk_contact_ct_1"))[0]["sector"] == "Suporte"
 
     closed = sample_event(
         EventId="evt_c",
@@ -133,17 +135,13 @@ async def test_transfer_sector_change_and_close(store, settings, members, fake_z
         content={"Open": False, "ClosedAtUTC": "2026-09-18T13:00:00Z", "ClosedBy": {"Id": "m1"}},
     )
     out = await handle(handler, closed)
-    last = fake_zep.of("graph.add_fact_triple")[-1]
-    assert last["fact_name"] == "ATENDIMENTO_ENCERRADO"
-    assert "Rafael Torres" in last["fact"] and "2026-09-18" in last["fact"]
-    # ChatClosed repete o LastMessage no payload, mas nao e evento de mensagem
-    assert len(fake_zep.of("thread.add_messages")) == 1
-    assert out.summary == "1 fato(s)"
-    threads = await store.threads_for_user("talk_contact_ct_1")
-    assert threads[0]["open"] == 0
+    assert (
+        len(fake_zep.calls) == n1
+    )  # ChatClosed repete o LastMessage, mas nao e evento de mensagem
+    assert (await store.threads_for_user("talk_contact_ct_1"))[0]["open"] is False
 
 
-async def test_contact_profile_change_updates_user(store, settings, members, fake_zep):
+async def test_contact_profile_change_updates_user_metadata(store, settings, members, fake_zep):
     handler = EventHandler(store, settings, members)
     await handle(handler, sample_event())
     await handle(
@@ -164,12 +162,9 @@ async def test_contact_profile_change_updates_user(store, settings, members, fak
     )
     upd = fake_zep.of("user.update")
     assert len(upd) == 1 and upd[0]["last_name"] == "Mendes Souza"
-    tags = [
-        f["target_node_name"]
-        for f in fake_zep.of("graph.add_fact_triple")
-        if f["fact_name"] == "TEM_TAG"
-    ]
-    assert tags.count("Cliente") == 1
+    assert upd[0]["metadata"]["tags"] == ["Lead quente", "Cliente"]
+    assert (await store.get_contact("talk_contact_ct_1"))["tags"] == ["Lead quente", "Cliente"]
+    assert all(f["fact_name"] == "ATENDIDO_POR" for f in fake_zep.of("graph.add_fact_triple"))
 
 
 async def test_internal_and_group_chats_are_skipped(store, settings, members, fake_zep):

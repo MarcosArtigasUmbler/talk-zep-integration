@@ -1,9 +1,14 @@
-"""Configuracao dos testes: sem rede, sem Zep real, sem worker."""
+"""Configuracao dos testes: sem rede, sem Zep real, sem worker.
+
+O Store roda em SQLite (memoria) sempre e, se ``MONGODB_TEST_URI`` estiver
+definido, tambem em MongoDB, num banco descartavel criado por sessao.
+"""
 
 from __future__ import annotations
 
 import copy
 import os
+import uuid
 from types import SimpleNamespace
 
 import pytest
@@ -15,7 +20,9 @@ os.environ.update(
         "ZEP_API_KEY": "test-key",
         "ZEP_ORG_GRAPH_ID": "umbler_teste",
         "WEBHOOK_TOKEN": "segredo",
+        "STORE_BACKEND": "sqlite",
         "DATABASE_PATH": ":memory:",
+        "MONGODB_URI": "",
         "START_WORKER": "false",
         "MEMBERS_FILE": "",
         "LOG_LEVEL": "WARNING",
@@ -23,8 +30,11 @@ os.environ.update(
 )
 
 from app.config import Settings, get_settings
-from app.pipeline.store import Store
+from app.pipeline.store import SQLiteStore, Store
 from app.talk.members import MemberDirectory
+
+MONGODB_TEST_URI = os.getenv("MONGODB_TEST_URI", "")
+STORE_BACKENDS = ["sqlite"] + (["mongodb"] if MONGODB_TEST_URI else [])
 
 SAMPLE_EVENT = {
     "Type": "Message",
@@ -158,10 +168,37 @@ def settings() -> Settings:
     return get_settings()
 
 
+async def _open_store(backend: str) -> Store:
+    if backend == "mongodb":
+        from app.pipeline.store.mongo import MongoStore
+
+        s = MongoStore(MONGODB_TEST_URI, f"talk_zep_test_{uuid.uuid4().hex[:8]}")
+    else:
+        s = SQLiteStore(":memory:")
+    await s.open()
+    return s
+
+
+async def _drop_store(s: Store) -> None:
+    from app.pipeline.store.mongo import MongoStore
+
+    if isinstance(s, MongoStore) and s._client is not None:
+        await s._client.drop_database(s.database)
+    await s.close()
+
+
+@pytest_asyncio.fixture(params=STORE_BACKENDS)
+async def any_store(request) -> Store:
+    """Roda o teste em cada backend disponivel."""
+    s = await _open_store(request.param)
+    yield s
+    await _drop_store(s)
+
+
 @pytest_asyncio.fixture
 async def store() -> Store:
-    s = Store(":memory:")
-    await s.open()
+    """SQLite em memoria: para testes que nao sao sobre o Store em si."""
+    s = await _open_store("sqlite")
     yield s
     await s.close()
 

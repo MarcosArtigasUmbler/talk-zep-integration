@@ -1,4 +1,4 @@
-"""Fila em memoria + diario em SQLite.
+"""Fila em memoria + diario no Store (MongoDB em producao).
 
 O webhook do Talk exige resposta em menos de 5 segundos; o Zep pode levar bem
 mais. Entao o handler HTTP so grava o evento e enfileira; estes workers fazem
@@ -9,7 +9,6 @@ diario volta para a fila.
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 import random
 
@@ -93,7 +92,7 @@ class Worker:
         attempts = int(row["attempts"]) + 1
 
         try:
-            event = WebhookEvent.parse(json.loads(row["payload"]))
+            event = WebhookEvent.parse(row["payload"])
         except (ValidationError, ValueError) as exc:
             await self.store.mark(event_id, STATUS_FAILED, error=f"payload invalido: {exc}"[:2000])
             log.error("evento %s com payload invalido: %s", event_id, exc)

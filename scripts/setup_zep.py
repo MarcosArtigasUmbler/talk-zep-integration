@@ -53,8 +53,19 @@ async def main(skip_ontology: bool, skip_instructions: bool) -> int:
         if skip_instructions:
             print("3. instrucoes: puladas")
         else:
-            removed = await apply_instructions()
-            print("3. instrucoes aplicadas ao projeto inteiro (removidas antes:", removed, ")")
+            try:
+                removed = await apply_instructions()
+                print("3. instrucoes aplicadas ao projeto inteiro (removidas antes:", removed, ")")
+            except ApiError as exc:
+                # Custom instructions existem so nos planos Flex Plus e Enterprise.
+                if exc.status_code in (400, 402, 403, 404):
+                    print(
+                        f"3. instrucoes NAO aplicadas (Zep {exc.status_code}). "
+                        "Provavelmente o plano nao inclui custom instructions; "
+                        "o restante do setup segue valido."
+                    )
+                else:
+                    raise
         return 0
     except ApiError as exc:
         print(f"Erro da API do Zep {exc.status_code}: {exc.body}", file=sys.stderr)

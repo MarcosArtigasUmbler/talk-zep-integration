@@ -9,7 +9,9 @@ API FastAPI que recebe webhooks do Umbler Talk e alimenta a memoria no Zep.
 - Dado de cliente vai no grafo do contato (`user_id`). O grafo da Umbler
   (`graph_id`) so recebe conhecimento geral da empresa.
 - Ontologia e instrucoes nao sao retroativas: mudou, rode `scripts/setup_zep`
-  e considere reprocessar.
+  e considere reprocessar. Plano Flex: maximo 10 entidades e 10 arestas.
+- Setor, canal, tags e estado do chat NAO viram nos do grafo (estado
+  operacional volatil). Ficam no Store e na metadata; `/briefing` expoe.
 
 ## Comandos
 
@@ -26,7 +28,8 @@ python -m scripts.setup_zep
 
 - `app/talk/` -- modelos do webhook (case-insensitive) e normalizacao
 - `app/zep/` -- camada do Zep: usuarios, threads, fatos, conhecimento, leitura, ontologia
-- `app/pipeline/` -- SQLite (idempotencia/fila) + worker + handlers (evento -> Zep)
+- `app/pipeline/store/` -- Store: interface + MongoDB (producao) + SQLite (dev/testes)
+- `app/pipeline/` -- worker (fila + retentativa) e handlers (evento -> Zep)
 - `app/api/` -- rotas HTTP
 - `scripts/` -- setup do Zep, carga de conhecimento, backfill (GET only), depuracao
 - `APRENDIZADOS-ZEP.md` (em `../getzap-example`) -- base empirica das decisoes

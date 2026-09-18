@@ -1,16 +1,24 @@
 """Ontologia do grafo: o vocabulario comercial da Umbler.
 
 E uma *dica* para o extrator, nao um schema: a classificacao e feita por LLM
-lendo a **descricao** de cada tipo. Regras que custam caro se ignoradas
-(APRENDIZADOS-ZEP.md, secao 5):
+lendo a **descricao** de cada tipo. Regras (APRENDIZADOS-ZEP.md, secao 5, e
+docs do Zep):
 
+* limite por plano, separado para entidades e arestas: Free 5, Flex 10,
+  Flex Plus 20. Esta ontologia tem 9 + 9, pensada para o Flex, com 1 + 1 de
+  folga;
 * todo tipo precisa de >= 1 propriedade; maximo 10 campos;
 * nomes proibidos: uuid, name, graph_id, name_embedding, summary, created_at;
+* tipos mutuamente exclusivos, descricao clara: cada fato vai para UM tipo;
 * ``set_ontology`` sobrescreve tudo e **nao e retroativo** -- aplique antes do
   primeiro webhook (``python -m scripts.setup_zep``).
 
 O tipo embutido ``User`` representa o proprio contato; por isso nao existe um
 tipo "Lead" ou "Cliente" aqui.
+
+Fora do grafo, de proposito: setor, canal, tags e estado do chat. Sao estado
+operacional, volatil, e ficam no Store (expostos em ``/briefing``) e na
+metadata das mensagens, que e filtravel na busca.
 """
 
 from __future__ import annotations
@@ -27,10 +35,11 @@ from app.zep.client import get_zep
 
 
 class Vendedor(EntityModel):
-    """Pessoa do time da Umbler (vendas, suporte ou sucesso do cliente) que atende o contato. Diferente de User, que e o proprio contato/cliente."""
+    """Pessoa do time da Umbler (vendas, suporte ou sucesso do cliente) que atende o contato pelo Umbler Talk, e-mail ou telefone. Diferente de User, que e o proprio contato/cliente."""
 
     equipe: EntityText = Field(
-        default=None, description="Time ou setor: Vendas, Suporte, Financeiro, Sucesso do Cliente."
+        default=None,
+        description="Time do atendente: Vendas, Suporte, Financeiro, Sucesso do Cliente.",
     )
 
 
@@ -38,8 +47,7 @@ class EmpresaCliente(EntityModel):
     """Empresa onde o contato trabalha ou que ele representa e que usa ou avalia produtos da Umbler. Prefira este tipo a Organization para empresas de clientes e prospects."""
 
     segmento: EntityText = Field(
-        default=None,
-        description="Ramo de atuacao, como agencia, e-commerce, clinica ou imobiliaria.",
+        default=None, description="Ramo de atuacao: agencia, e-commerce, clinica, imobiliaria, etc."
     )
     cidade: EntityText = Field(default=None, description="Cidade e estado da empresa.")
     porte: EntityText = Field(
@@ -48,16 +56,16 @@ class EmpresaCliente(EntityModel):
 
 
 class ProdutoUmbler(EntityModel):
-    """Produto ou servico vendido pela Umbler: Umbler Talk, hospedagem de sites, e-mail profissional, dominios, servidores e afins. Prefira este tipo a Object ou Topic para ofertas da Umbler."""
+    """Produto ou servico vendido pela Umbler. O principal e o Umbler Talk (atendimento por WhatsApp); tambem hospedagem de sites, e-mail profissional, dominios e servidores. Prefira este tipo a Object ou Topic para ofertas da Umbler."""
 
     categoria: EntityText = Field(
         default=None,
-        description="Categoria do produto: atendimento, hospedagem, e-mail, dominio, servidor.",
+        description="Categoria: atendimento, hospedagem, e-mail, dominio, servidor.",
     )
 
 
 class Plano(EntityModel):
-    """Plano comercial de um produto da Umbler, com nome, preco e limites. Prefira este tipo a Product para pacotes comerciais."""
+    """Plano comercial nomeado de um produto da Umbler, com preco e limites (por exemplo os planos do Umbler Talk). Prefira este tipo a Product para pacotes comerciais."""
 
     produto: EntityText = Field(default=None, description="Produto ao qual o plano pertence.")
     preco_mensal: EntityInt = Field(
@@ -66,21 +74,34 @@ class Plano(EntityModel):
 
 
 class Negociacao(EntityModel):
-    """Oportunidade comercial nomeada, com estagio no funil e valor esperado. So existe se a conversa nomeia uma oportunidade concreta."""
+    """Oportunidade comercial nomeada, com estagio no funil e valor esperado. So existe quando a fonte nomeia uma oportunidade concreta (proposta, deal do CRM)."""
 
     estagio: EntityText = Field(
         default=None,
-        description="Etapa do funil: qualificacao, demonstracao, proposta, fechamento, perdida ou adiada.",
+        description="Etapa do funil: qualificacao, demonstracao, proposta, fechamento, ganha, perdida ou adiada.",
     )
     valor_mensal: EntityInt = Field(default=None, description="Receita mensal esperada em reais.")
+    origem: EntityText = Field(
+        default=None, description="De onde veio a oportunidade: WhatsApp, e-mail, CRM, indicacao."
+    )
 
 
-class Objecao(EntityModel):
-    """Duvida, resistencia ou bloqueio levantado pelo contato que trava a compra ou a renovacao."""
+class Necessidade(EntityModel):
+    """Dor, problema ou caso de uso que o contato quer resolver com um produto da Umbler: varios atendentes no mesmo WhatsApp, nao perder leads, integrar com outro sistema, reduzir custo. Nao e uma objecao."""
 
     tipo: EntityText = Field(
         default=None,
-        description="Natureza: preco, integracao, prazo, concorrente, seguranca, suporte ou tecnica.",
+        description="Natureza: atendimento, organizacao, integracao, escala, custo, controle, automacao.",
+    )
+    urgencia: EntityText = Field(default=None, description="Quao urgente o contato diz que e.")
+
+
+class Objecao(EntityModel):
+    """Duvida, resistencia ou bloqueio levantado pelo contato que trava a compra, a expansao ou a renovacao. Nao e uma necessidade."""
+
+    tipo: EntityText = Field(
+        default=None,
+        description="Natureza: preco, integracao, prazo, concorrente, seguranca, suporte, tecnica.",
     )
 
 
@@ -92,28 +113,15 @@ class Concorrente(EntityModel):
     )
 
 
-class Setor(EntityModel):
-    """Setor (fila) de atendimento do Umbler Talk por onde o contato passou, como Vendas, Suporte ou Financeiro."""
+class Compromisso(EntityModel):
+    """Proximo passo combinado entre contato e atendente, com prazo: enviar proposta, reuniao, decisao do socio, retorno em data. E um Event; prefira este tipo a Event para combinados comerciais."""
 
-    tipo: EntityText = Field(
-        default=None, description="Funcao do setor: comercial, suporte, financeiro ou outro."
+    prazo: EntityText = Field(default=None, description="Data ou prazo combinado.")
+    responsavel: EntityText = Field(
+        default=None, description="Quem deve agir: o contato, o atendente ou terceiro."
     )
-
-
-class Tag(EntityModel):
-    """Etiqueta aplicada ao contato ou a conversa no Umbler Talk pela equipe, como estagio do funil ou origem do lead."""
-
-    categoria: EntityText = Field(
-        default=None,
-        description="O que a tag indica: estagio, origem, prioridade, produto ou outro.",
-    )
-
-
-class Canal(EntityModel):
-    """Canal de contato do Umbler Talk pelo qual a conversa acontece: numero de WhatsApp, Instagram ou widget do site."""
-
-    tipo: EntityText = Field(
-        default=None, description="WhatsApp, Instagram, widget do site ou outro."
+    status: EntityText = Field(
+        default=None, description="Pendente, cumprido, atrasado ou cancelado."
     )
 
 
@@ -124,36 +132,8 @@ class ATENDIDO_POR(EdgeModel):
     """Liga o contato ao atendente da Umbler responsavel pela conversa."""
 
     origem: EntityText = Field(
-        default=None, description="Como foi definido: transferencia, bot ou atribuicao automatica."
+        default=None, description="Como foi definido: transferencia, bot ou atribuicao."
     )
-
-
-class ATENDIDO_NO_SETOR(EdgeModel):
-    """Liga o contato ao setor do Umbler Talk que cuida da conversa."""
-
-    motivo: EntityText = Field(default=None, description="Por que a conversa esta neste setor.")
-
-
-class ATENDIMENTO_ENCERRADO(EdgeModel):
-    """Registra que uma conversa do contato foi encerrada em um setor."""
-
-    resultado: EntityText = Field(
-        default=None, description="Desfecho do atendimento, quando conhecido."
-    )
-
-
-class TEM_TAG(EdgeModel):
-    """Liga o contato a uma tag aplicada pela equipe no Umbler Talk."""
-
-    aplicada_em: EntityText = Field(
-        default=None, description="Se a tag foi aplicada ao contato ou a uma conversa."
-    )
-
-
-class CONTATO_PELO_CANAL(EdgeModel):
-    """Liga o contato ao canal do Umbler Talk usado na conversa."""
-
-    identificador: EntityText = Field(default=None, description="Numero ou conta do canal.")
 
 
 class TRABALHA_EM(EdgeModel):
@@ -164,11 +144,19 @@ class TRABALHA_EM(EdgeModel):
     )
 
 
-class INTERESSADO_EM(EdgeModel):
-    """Liga o contato a um produto da Umbler que ele usa, pediu ou avalia."""
+class USA(EdgeModel):
+    """O contato ou sua empresa JA E CLIENTE do produto ou plano da Umbler: usa hoje ou usou. Se ainda esta decidindo, use AVALIA."""
 
     situacao: EntityText = Field(
-        default=None, description="Se ja usa, esta avaliando, pediu orcamento ou cancelou."
+        default=None, description="Ativo, em teste gratuito, cancelado ou migrado."
+    )
+
+
+class AVALIA(EdgeModel):
+    """O contato ou sua empresa AINDA NAO COMPROU e esta considerando o produto ou plano da Umbler. Se ja usa, use USA."""
+
+    motivo: EntityText = Field(
+        default=None, description="Por que esse produto ou plano faz sentido."
     )
 
 
@@ -178,11 +166,11 @@ class TEM_NEGOCIACAO(EdgeModel):
     prioridade: EntityText = Field(default=None, description="Prioridade do negocio para o time.")
 
 
-class AVALIA_PLANO(EdgeModel):
-    """Liga a negociacao ou o contato ao plano da Umbler em consideracao."""
+class TEM_NECESSIDADE(EdgeModel):
+    """Liga o contato a uma dor ou caso de uso que ele quer resolver."""
 
-    motivo: EntityText = Field(
-        default=None, description="Por que esse plano faz sentido para o cliente."
+    impacto: EntityText = Field(
+        default=None, description="O que acontece hoje por causa dessa dor."
     )
 
 
@@ -202,52 +190,42 @@ class COMPARA_COM(EdgeModel):
     )
 
 
+class COMBINOU(EdgeModel):
+    """Liga o contato ou o atendente a um compromisso assumido na conversa."""
+
+    prazo: EntityText = Field(default=None, description="Data ou prazo dito na conversa.")
+
+
 ENTIDADES: dict[str, type[EntityModel]] = {
     "Vendedor": Vendedor,
     "EmpresaCliente": EmpresaCliente,
     "ProdutoUmbler": ProdutoUmbler,
     "Plano": Plano,
     "Negociacao": Negociacao,
+    "Necessidade": Necessidade,
     "Objecao": Objecao,
     "Concorrente": Concorrente,
-    "Setor": Setor,
-    "Tag": Tag,
-    "Canal": Canal,
+    "Compromisso": Compromisso,
 }
+
+_QUEM = ("User", "EmpresaCliente")
+_OFERTA = ("ProdutoUmbler", "Plano")
 
 ARESTAS = {
     "ATENDIDO_POR": (ATENDIDO_POR, [EntityEdgeSourceTarget(source="User", target="Vendedor")]),
-    "ATENDIDO_NO_SETOR": (
-        ATENDIDO_NO_SETOR,
-        [EntityEdgeSourceTarget(source="User", target="Setor")],
-    ),
-    "ATENDIMENTO_ENCERRADO": (
-        ATENDIMENTO_ENCERRADO,
-        [EntityEdgeSourceTarget(source="User", target="Setor")],
-    ),
-    "TEM_TAG": (TEM_TAG, [EntityEdgeSourceTarget(source="User", target="Tag")]),
-    "CONTATO_PELO_CANAL": (
-        CONTATO_PELO_CANAL,
-        [EntityEdgeSourceTarget(source="User", target="Canal")],
-    ),
     "TRABALHA_EM": (TRABALHA_EM, [EntityEdgeSourceTarget(source="User", target="EmpresaCliente")]),
-    "INTERESSADO_EM": (
-        INTERESSADO_EM,
-        [EntityEdgeSourceTarget(source="User", target="ProdutoUmbler")],
+    "USA": (USA, [EntityEdgeSourceTarget(source=s, target=t) for s in _QUEM for t in _OFERTA]),
+    "AVALIA": (
+        AVALIA,
+        [EntityEdgeSourceTarget(source=s, target=t) for s in _QUEM for t in _OFERTA],
     ),
     "TEM_NEGOCIACAO": (
         TEM_NEGOCIACAO,
-        [
-            EntityEdgeSourceTarget(source="User", target="Negociacao"),
-            EntityEdgeSourceTarget(source="EmpresaCliente", target="Negociacao"),
-        ],
+        [EntityEdgeSourceTarget(source=s, target="Negociacao") for s in _QUEM],
     ),
-    "AVALIA_PLANO": (
-        AVALIA_PLANO,
-        [
-            EntityEdgeSourceTarget(source="Negociacao", target="Plano"),
-            EntityEdgeSourceTarget(source="User", target="Plano"),
-        ],
+    "TEM_NECESSIDADE": (
+        TEM_NECESSIDADE,
+        [EntityEdgeSourceTarget(source="User", target="Necessidade")],
     ),
     "LEVANTOU_OBJECAO": (
         LEVANTOU_OBJECAO,
@@ -260,10 +238,21 @@ ARESTAS = {
             EntityEdgeSourceTarget(source="Negociacao", target="Concorrente"),
         ],
     ),
+    "COMBINOU": (
+        COMBINOU,
+        [
+            EntityEdgeSourceTarget(source="User", target="Compromisso"),
+            EntityEdgeSourceTarget(source="Vendedor", target="Compromisso"),
+        ],
+    ),
 }
 
 ENTITY_TYPES: tuple[str, ...] = tuple(ENTIDADES)
 EDGE_TYPES: tuple[str, ...] = tuple(ARESTAS)
+
+# Teto do plano Flex. Se mudar de plano, ajuste aqui e no README.
+PLAN_LIMIT = 10
+assert len(ENTITY_TYPES) <= PLAN_LIMIT and len(EDGE_TYPES) <= PLAN_LIMIT
 
 
 @dataclass(frozen=True)

@@ -1,27 +1,19 @@
-"""Persistencia local (SQLite) da integracao.
-
-Guarda o que o Zep nao guarda por nos:
-
-* ``events``   -- diario dos webhooks recebidos. E a idempotencia (o Talk
-  reenvia ate 2 vezes com o mesmo EventId) e a fila duravel: o que ficou
-  pendente numa queda e reprocessado na subida.
-* ``messages`` -- ids de mensagem ja enviados ao Zep (o mesmo LastMessage pode
-  chegar em eventos diferentes).
-* ``facts``    -- fatos estruturados ja gravados, para nao duplicar fact_triple.
-* ``contacts`` -- ultimo estado da ficha do contato enviado ao Zep.
-* ``chats``    -- chat -> usuario/thread, para o copiloto achar a thread atual.
-* ``members``  -- cache de nomes de atendentes (o webhook traz so o id).
-"""
+"""Store em SQLite -- desenvolvimento e testes (um processo, um host)."""
 
 from __future__ import annotations
 
-import hashlib
 import json
 import os
-from datetime import UTC, datetime
 from typing import Any
 
 import aiosqlite
+
+from app.pipeline.store.base import (
+    EVENT_SUMMARY_FIELDS,
+    RESUMABLE_STATUSES,
+    Store,
+    now_iso,
+)
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS events (
@@ -55,6 +47,7 @@ CREATE TABLE IF NOT EXISTS contacts (
     name        TEXT,
     phone       TEXT,
     fingerprint TEXT,
+    tags        TEXT,
     updated_at  TEXT
 );
 CREATE TABLE IF NOT EXISTS chats (
@@ -75,26 +68,8 @@ CREATE TABLE IF NOT EXISTS members (
 );
 """
 
-STATUS_PENDING = "pending"
-STATUS_PROCESSING = "processing"
-STATUS_DONE = "done"
-STATUS_SKIPPED = "skipped"
-STATUS_RETRY = "retry"
-STATUS_FAILED = "failed"
 
-RESUMABLE_STATUSES = (STATUS_PENDING, STATUS_PROCESSING, STATUS_RETRY)
-
-
-def now_iso() -> str:
-    return datetime.now(UTC).isoformat(timespec="milliseconds")
-
-
-def fact_key(user_id: str, fact_name: str, target: str, fact: str) -> str:
-    raw = f"{user_id}|{fact_name}|{target.lower()}|{fact.lower()}"
-    return hashlib.sha1(raw.encode("utf-8")).hexdigest()
-
-
-class Store:
+class SQLiteStore(Store):
     def __init__(self, path: str) -> None:
         self.path = path
         self._db: aiosqlite.Connection | None = None
@@ -123,7 +98,6 @@ class Store:
     async def record_event(
         self, event_id: str, event_type: str | None, event_date: str | None, payload: Any
     ) -> bool:
-        """Grava o evento. Devolve False se o EventId ja era conhecido."""
         cur = await self.db.execute(
             "INSERT OR IGNORE INTO events(event_id, type, event_date, received_at, payload) "
             "VALUES (?, ?, ?, ?, ?)",
@@ -135,7 +109,11 @@ class Store:
     async def get_event(self, event_id: str) -> dict | None:
         cur = await self.db.execute("SELECT * FROM events WHERE event_id = ?", (event_id,))
         row = await cur.fetchone()
-        return dict(row) if row else None
+        if row is None:
+            return None
+        out = dict(row)
+        out["payload"] = json.loads(out["payload"])
+        return out
 
     async def mark(
         self,
@@ -171,7 +149,7 @@ class Store:
         return [row["event_id"] for row in await cur.fetchall()]
 
     async def list_events(self, status: str | None = None, limit: int = 50) -> list[dict]:
-        cols = "event_id, type, event_date, received_at, status, attempts, last_error, summary"
+        cols = ", ".join(EVENT_SUMMARY_FIELDS)
         if status:
             cur = await self.db.execute(
                 f"SELECT {cols} FROM events WHERE status = ? ORDER BY received_at DESC LIMIT ?",
@@ -198,7 +176,6 @@ class Store:
         return await cur.fetchone() is not None
 
     async def mark_messages(self, items: list[tuple[str, str | None, str]]) -> None:
-        """items: (message_id, event_id, thread_id)."""
         await self.db.executemany(
             "INSERT OR IGNORE INTO messages(message_id, event_id, thread_id, created_at) "
             "VALUES (?, ?, ?, ?)",
@@ -230,27 +207,47 @@ class Store:
         return row["fingerprint"] if row else None
 
     async def upsert_contact(
-        self, user_id: str, contact_id: str, name: str | None, phone: str | None, fingerprint: str
+        self,
+        user_id: str,
+        contact_id: str,
+        name: str | None,
+        phone: str | None,
+        fingerprint: str,
+        tags: list[str] | None = None,
     ) -> None:
         await self.db.execute(
-            "INSERT INTO contacts(user_id, contact_id, name, phone, fingerprint, updated_at) "
-            "VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(user_id) DO UPDATE SET "
+            "INSERT INTO contacts(user_id, contact_id, name, phone, fingerprint, tags, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT(user_id) DO UPDATE SET "
             "name = excluded.name, phone = excluded.phone, fingerprint = excluded.fingerprint, "
-            "updated_at = excluded.updated_at",
-            (user_id, contact_id, name, phone, fingerprint, now_iso()),
+            "tags = excluded.tags, updated_at = excluded.updated_at",
+            (
+                user_id,
+                contact_id,
+                name,
+                phone,
+                fingerprint,
+                json.dumps(tags or [], ensure_ascii=False),
+                now_iso(),
+            ),
         )
         await self.db.commit()
+
+    @staticmethod
+    def _contact(row: aiosqlite.Row) -> dict:
+        out = dict(row)
+        out["tags"] = json.loads(out.get("tags") or "[]")
+        return out
 
     async def get_contact(self, user_id: str) -> dict | None:
         cur = await self.db.execute("SELECT * FROM contacts WHERE user_id = ?", (user_id,))
         row = await cur.fetchone()
-        return dict(row) if row else None
+        return self._contact(row) if row else None
 
     async def list_contacts(self, limit: int = 100) -> list[dict]:
         cur = await self.db.execute(
             "SELECT * FROM contacts ORDER BY updated_at DESC LIMIT ?", (limit,)
         )
-        return [dict(r) for r in await cur.fetchall()]
+        return [self._contact(r) for r in await cur.fetchall()]
 
     # --- chats ---------------------------------------------------------------
 
@@ -291,6 +288,13 @@ class Store:
         )
         await self.db.commit()
 
+    @staticmethod
+    def _chat(row: aiosqlite.Row) -> dict:
+        out = dict(row)
+        if out.get("open") is not None:
+            out["open"] = bool(out["open"])
+        return out
+
     async def latest_thread_for_user(self, user_id: str) -> str | None:
         cur = await self.db.execute(
             "SELECT thread_id FROM chats WHERE user_id = ? ORDER BY last_event_at DESC LIMIT 1",
@@ -305,7 +309,7 @@ class Store:
             "FROM chats WHERE user_id = ? ORDER BY last_event_at DESC",
             (user_id,),
         )
-        return [dict(r) for r in await cur.fetchall()]
+        return [self._chat(r) for r in await cur.fetchall()]
 
     # --- membros -------------------------------------------------------------
 

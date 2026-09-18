@@ -17,7 +17,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from app.config import get_settings
-from app.pipeline.store import Store
+from app.pipeline.store import Store, create_store
 from app.talk.normalize import contact_user_id
 from app.zep import retrieval
 from app.zep.client import close_zep, get_zep
@@ -68,7 +68,7 @@ async def show_umbler() -> None:
 
 
 async def main(contact_id: str | None, umbler: bool) -> None:
-    store = Store(get_settings().database_path)
+    store = create_store(get_settings())
     await store.open()
     try:
         if umbler:

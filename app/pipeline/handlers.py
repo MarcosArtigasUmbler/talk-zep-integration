@@ -3,11 +3,13 @@
 Dois caminhos de escrita, de proposito (APRENDIZADOS-ZEP.md, secao 9):
 
 * **Mensagens** sao material para interpretar -> ``thread.add_messages``.
-* **Dados estruturados** do webhook (setor, atendente, tags, canal,
-  encerramento) ja sao conhecidos -> ``graph.add_fact_triple``, sem LLM.
+* **Dado estruturado** que o webhook permite afirmar (quem atende o contato)
+  -> ``graph.add_fact_triple``, sem LLM.
 
-Cada evento, seja qual for o tipo, sincroniza a ficha (usuario), a thread e
-os fatos estruturados; so o que mudou e enviado (deduplicado no SQLite).
+Estado operacional (setor, canal, tags, chat aberto/fechado) **nao vira no do
+grafo**: fica no Store e na metadata do usuario e das mensagens, e o
+``/briefing`` devolve o estado atual. Tags sao muitas e volateis; no grafo
+virariam fatos defasados competindo com fatos uteis.
 """
 
 from __future__ import annotations
@@ -32,6 +34,8 @@ from app.zep.threads import add_live_messages, ensure_thread
 from app.zep.users import contact_fingerprint, ensure_user
 
 log = logging.getLogger(__name__)
+
+MESSAGE_EVENTS = {"message", "messagefileuploaded"}
 
 
 @dataclass
@@ -66,17 +70,22 @@ class EventHandler:
         when = to_rfc3339(chat.event_at_utc) or to_rfc3339(event.event_date)
         out = Outcome("done")
 
-        # 1. usuario (ficha do contato) -- so atualiza se mudou
+        # 1. usuario (ficha do contato, tags incluidas) -- so se mudou
         fingerprint = contact_fingerprint(contact)
         previous = await self.store.contact_fingerprint(user_id)
         if previous != fingerprint:
             result = await ensure_user(user_id, contact, update=previous is not None)
             await self.store.upsert_contact(
-                user_id, contact.id or "", contact.name, contact.phone_number, fingerprint
+                user_id,
+                contact.id or "",
+                contact.name,
+                contact.phone_number,
+                fingerprint,
+                tags=[t.name for t in contact.tags if t.name],
             )
             out.add(f"usuario {result}")
 
-        # 2. thread (chat)
+        # 2. thread (chat) + estado operacional
         if not await self.store.chat_known(chat.id or ""):
             created = await ensure_thread(thread_id, user_id)
             out.add("thread criada" if created else "thread existente")
@@ -92,19 +101,19 @@ class EventHandler:
             member_id=member_id,
         )
 
-        # 3. fatos estruturados (deduplicados)
-        sent = await self._sync_structured_facts(
-            user_id, contact_name, chat, when, event.type_lower
-        )
-        if sent:
-            out.add(f"{sent} fato(s)")
+        # 3. fato estruturado: quem atende
+        if member_id:
+            name = await self.members.name_for(member_id)
+            label = self.members.label_for(member_id, name)
+            origem = "transferencia" if event.type_lower == "membertransfer" else "atendimento"
+            if await self._send_fact(
+                user_id, F.fact_atendido_por(contact_name, label, when, origem)
+            ):
+                out.add(f"atendido por {label}")
 
         # 4. mensagem
-        if event.type_lower in {"message", "messagefileuploaded"}:
-            note = await self._handle_message(event, chat, user_id, thread_id, event_id)
-            out.add(note)
-        elif event.type_lower == "chatprivatestatuschanged":
-            out.add("status privado ignorado")
+        if event.type_lower in MESSAGE_EVENTS:
+            out.add(await self._handle_message(event, chat, user_id, thread_id, event_id))
 
         return out
 
@@ -163,48 +172,3 @@ class EventHandler:
         await F.add_fact(user_id, triple)
         await self.store.mark_fact(key, user_id, triple.fact_name, triple.fact)
         return True
-
-    async def _sync_structured_facts(
-        self, user_id: str, contact_name: str, chat: Chat, when: str | None, event_type: str
-    ) -> int:
-        sent = 0
-        triples: list[F.FactTriple] = []
-
-        if chat.channel and chat.channel.name:
-            triples.append(
-                F.fact_canal(contact_name, chat.channel.name, chat.channel.phone_number, when)
-            )
-
-        if chat.sector and chat.sector.name:
-            triples.append(F.fact_setor(contact_name, chat.sector.name, when))
-
-        if chat.organization_member and chat.organization_member.id:
-            mid = chat.organization_member.id
-            name = await self.members.name_for(mid)
-            label = self.members.label_for(mid, name)
-            origem = "transferencia" if event_type == "membertransfer" else "atendimento"
-            triples.append(F.fact_atendido_por(contact_name, label, when, origem))
-
-        for tag in chat.contact.tags if chat.contact else []:
-            if tag.name:
-                triples.append(F.fact_tag(contact_name, tag.name, when, "contato"))
-        for tag in chat.tags:
-            if tag.name:
-                triples.append(F.fact_tag(contact_name, tag.name, when, "conversa"))
-
-        if event_type == "chatclosed" or (chat.open is False and chat.closed_at_utc):
-            sector = chat.sector.name if chat.sector and chat.sector.name else "Atendimento"
-            closer = None
-            if chat.closed_by and chat.closed_by.id:
-                closer_name = await self.members.name_for(chat.closed_by.id)
-                closer = self.members.label_for(chat.closed_by.id, closer_name)
-            triples.append(
-                F.fact_encerrado(
-                    contact_name, sector, to_rfc3339(chat.closed_at_utc) or when, closer
-                )
-            )
-
-        for triple in triples:
-            if await self._send_fact(user_id, triple):
-                sent += 1
-        return sent

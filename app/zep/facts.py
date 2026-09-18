@@ -1,8 +1,10 @@
 """Fatos estruturados -> ``graph.add_fact_triple`` (sem LLM, sem erro de extracao).
 
-Tudo que ja chega estruturado no webhook (setor, atendente, tags, canal,
-encerramento) entra por aqui. Restricoes: ``fact`` <= 250 caracteres,
-``fact_name`` em SNAKE_CASE com 1-50 caracteres, um rotulo por no.
+Dado que ja chega estruturado nao deve passar pelo extrator. Hoje o webhook do
+Talk permite afirmar com seguranca apenas quem atende o contato; quando o
+Pipedrive entrar, deals viram ``fact_negociacao``. Restricoes do Zep: ``fact``
+<= 250 caracteres, ``fact_name`` em SNAKE_CASE com 1-50 caracteres, um rotulo
+por no.
 """
 
 from __future__ import annotations
@@ -58,7 +60,7 @@ async def add_fact(user_id: str | None, triple: FactTriple, *, graph_id: str | N
     log.info("zep: fato [%s] %s", triple.fact_name, triple.fact)
 
 
-# --- Fabricas dos fatos que o webhook do Talk permite afirmar -----------------
+# --- Fabricas ------------------------------------------------------------------
 
 
 def fact_atendido_por(contact: str, member: str, valid_at: str | None, origem: str) -> FactTriple:
@@ -74,58 +76,28 @@ def fact_atendido_por(contact: str, member: str, valid_at: str | None, origem: s
     )
 
 
-def fact_setor(contact: str, sector: str, valid_at: str | None) -> FactTriple:
-    return FactTriple(
-        fact=f"{contact} está sendo atendido(a) no setor {sector} do Umbler Talk.",
-        fact_name="ATENDIDO_NO_SETOR",
-        source_name=contact,
-        source_label="User",
-        target_name=sector,
-        target_label="Setor",
-        valid_at=valid_at,
-    )
-
-
-def fact_encerrado(
-    contact: str, sector: str, closed_at: str | None, closer: str | None
+def fact_negociacao(
+    contact: str,
+    deal: str,
+    *,
+    estagio: str,
+    valor_mensal: int | None,
+    origem: str,
+    valid_at: str | None,
 ) -> FactTriple:
-    quem = f" por {closer}" if closer else ""
-    quando = f" em {closed_at[:10]}" if closed_at else ""
+    """Deal de CRM (Pipedrive) -> Negociacao. Reservado para a proxima fonte."""
+    valor = f", R$ {valor_mensal}/mês" if valor_mensal else ""
     return FactTriple(
-        fact=f"Atendimento de {contact} no setor {sector} foi encerrado{quando}{quem}.",
-        fact_name="ATENDIMENTO_ENCERRADO",
+        fact=f"{contact} tem a negociação '{deal}' no estágio {estagio}{valor}.",
+        fact_name="TEM_NEGOCIACAO",
         source_name=contact,
         source_label="User",
-        target_name=sector,
-        target_label="Setor",
-        valid_at=closed_at,
-    )
-
-
-def fact_tag(contact: str, tag: str, valid_at: str | None, where: str) -> FactTriple:
-    return FactTriple(
-        fact=f"{contact} tem a tag '{tag}' no Umbler Talk.",
-        fact_name="TEM_TAG",
-        source_name=contact,
-        source_label="User",
-        target_name=tag,
-        target_label="Tag",
+        target_name=deal,
+        target_label="Negociacao",
         valid_at=valid_at,
-        edge_attributes={"aplicada_em": where},
-    )
-
-
-def fact_canal(
-    contact: str, channel: str, identifier: str | None, valid_at: str | None
-) -> FactTriple:
-    via = f" ({identifier})" if identifier else ""
-    return FactTriple(
-        fact=f"{contact} conversa com a Umbler pelo canal {channel}{via}.",
-        fact_name="CONTATO_PELO_CANAL",
-        source_name=contact,
-        source_label="User",
-        target_name=channel,
-        target_label="Canal",
-        valid_at=valid_at,
-        edge_attributes={"identificador": identifier or ""},
+        target_attributes={
+            "estagio": estagio,
+            "valor_mensal": valor_mensal,
+            "origem": origem,
+        },
     )

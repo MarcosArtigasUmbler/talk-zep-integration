@@ -2,7 +2,7 @@
 
 Fluxo:
 
-    Umbler Talk --webhook--> POST /webhooks/talk --> SQLite (diario) --> fila
+    Umbler Talk --webhook--> POST /webhooks/talk --> Store (diario) --> fila
         --> worker --> Zep (usuario, thread, mensagens, fatos)
 
     Agente / copiloto --> GET /contacts/{id}/briefing, POST /search ...
@@ -20,7 +20,7 @@ from fastapi import FastAPI
 
 from app.api import admin, knowledge, memory, webhook
 from app.config import get_settings
-from app.pipeline.store import Store
+from app.pipeline.store import create_store
 from app.pipeline.worker import Worker
 from app.talk.members import MemberDirectory
 from app.zep.client import close_zep
@@ -36,8 +36,9 @@ def create_app() -> FastAPI:
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
-        store = Store(settings.database_path)
+        store = create_store(settings)
         await store.open()
+        log.info("store: %s", type(store).__name__)
         members = MemberDirectory(store, settings)
         await members.load()
         app.state.settings = settings

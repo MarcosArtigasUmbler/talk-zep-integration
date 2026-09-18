@@ -24,8 +24,15 @@ Umbler Talk ──webhook──▶ POST /webhooks/talk ──▶ SQLite (diário
 | Mensagem do contato | `Message(role="user")` | Material para o Zep interpretar. |
 | Mensagem de membro / bot | `Message(role="assistant", name=<atendente>)` | Idem. |
 | Nota interna (`IsPrivate`) | Episódio de texto no grafo do contato | Não é conversa; é observação do time sobre o cliente. |
-| Setor, atendente, tags, canal, encerramento | **`graph.add_fact_triple`** | Dado que já chega estruturado não passa pelo LLM: elimina erros de extração. |
+| Atendente responsável | **`graph.add_fact_triple`** `ATENDIDO_POR` | Dado que já chega estruturado não passa pelo LLM: elimina erros de extração. |
+| Setor, canal, tags, chat aberto/fechado | Store (MongoDB) + metadata do usuário e das mensagens | Estado operacional e volátil, não memória. O `/briefing` devolve o estado atual; a metadata das mensagens é filtrável na busca do grafo. |
 | Conhecimento da Umbler | Grafo avulso `ZEP_ORG_GRAPH_ID` | Legível pelo agente de qualquer contato. **Nunca dado de cliente.** |
+
+**Por que tags não viram nós.** São muitas, mudam o tempo todo e não são
+determinísticas. No grafo virariam dezenas de fatos "tem a tag X" defasados,
+competindo com fatos úteis na busca. Ficam na metadata do usuário no Zep e no
+Store, sempre com o estado atual. Se uma tag específica se provar importante
+como memória, dá para adicioná-la como fato depois.
 
 O `created_at` de cada mensagem e o `valid_at` de cada fato usam a data do
 evento no Talk, não a do recebimento. É isso que faz o grafo bitemporal do Zep
@@ -40,25 +47,41 @@ aceita PascalCase e camelCase.
 | Evento | O que a integração faz |
 |---|---|
 | `Message`, `MessageFileUploaded` | Grava a mensagem na thread (ou a nota interna no grafo). |
-| `NewChat` | Cria a thread; fatos de canal, setor e atendente. |
+| `NewChat` | Cria a thread; fato `ATENDIDO_POR` se já há atendente. |
 | `MemberTransfer` | Fato `ATENDIDO_POR` com o novo atendente. |
-| `ChatSectorChanged` | Fato `ATENDIDO_NO_SETOR`. |
-| `ChatTagChanged` | Fatos `TEM_TAG` (tags do contato e da conversa). |
-| `ChatClosed` | Fato `ATENDIMENTO_ENCERRADO`. |
-| `ChatPrivateStatusChanged` | Ignorado (é visibilidade interna, não memória). |
+| `ChatSectorChanged`, `ChatClosed` | Atualizam o estado do chat no Store (setor, aberto/fechado). |
+| `ChatTagChanged` | Atualiza tags na metadata do usuário no Zep e no Store. |
+| `ChatPrivateStatusChanged` | Só atualiza o estado do chat. |
 
 Independentemente do tipo, todo evento sincroniza a ficha do contato (só se
-mudou) e os fatos estruturados (só os novos). Conversas internas entre membros
-são ignoradas; grupos ficam fora por padrão (`INGEST_GROUP_CHATS`).
+mudou), o estado do chat e o atendente responsável (só se mudou). Conversas
+internas entre membros são ignoradas; grupos ficam fora por padrão
+(`INGEST_GROUP_CHATS`).
 
 ### Contrato do webhook e a fila
 
 O Talk exige **2xx em menos de 5 segundos**, reenvia até 2 vezes com o mesmo
 `EventId` (header `x-attempt`) e pausa o webhook após 100 falhas no dia. Por
-isso o handler HTTP só grava o evento no SQLite e enfileira; os workers falam
+isso o handler HTTP só grava o evento no Store e enfileira; os workers falam
 com o Zep depois, com retentativa exponencial (`MAX_ATTEMPTS`). Evento
 reentregue é reconhecido pelo `EventId` e ignorado. Na subida, eventos que
 ficaram pendentes voltam para a fila.
+
+### Persistência
+
+O Store guarda o que o Zep não guarda por nós: diário de eventos
+(idempotência e fila durável), mensagens e fatos já enviados, ficha e tags do
+contato, chat → thread com setor e atendente atuais, e nomes de atendentes.
+
+| Backend | Quando | Configuração |
+|---|---|---|
+| **MongoDB** | produção | `MONGODB_URI` (e `MONGODB_DB`, padrão `talk_zep`) |
+| SQLite | desenvolvimento e testes | `DATABASE_PATH` |
+
+`STORE_BACKEND=auto` escolhe MongoDB se houver URI. As duas implementações
+seguem a mesma interface (`app/pipeline/store/base.py`) e o mesmo conjunto de
+testes de contrato (`tests/test_store.py`, que também roda contra o Mongo
+quando `MONGODB_TEST_URI` está definido).
 
 O Talk não assina o webhook. Cadastre a URL como
 `https://seu-host/webhooks/talk?token=<WEBHOOK_TOKEN>` (ou envie o header
@@ -80,7 +103,9 @@ python -m scripts.setup_zep
 ```
 
 Isso cria o grafo da Umbler, aplica a ontologia e as instruções de idioma.
-Depois suba a API:
+Instruções customizadas só existem nos planos Flex Plus e Enterprise; em
+outros planos o passo 3 avisa e o restante do setup segue válido. Depois suba
+a API:
 
 ```bash
 uvicorn app.main:app --host 0.0.0.0 --port 8000
@@ -141,17 +166,28 @@ duas verdades.
 
 ## Ontologia
 
-Definida em `app/zep/ontology.py`. O tipo embutido `User` é o contato.
+Definida em `app/zep/ontology.py`. O tipo embutido `User` é o contato. A
+ontologia descreve o **domínio de venda**, não a fonte: e-mail e Pipedrive
+entrarão depois usando os mesmos tipos.
 
-| Entidades | Arestas |
+| Entidades (9) | Arestas (9) |
 |---|---|
-| `Vendedor`, `EmpresaCliente`, `ProdutoUmbler`, `Plano`, `Negociacao`, `Objecao`, `Concorrente`, `Setor`, `Tag`, `Canal` | `ATENDIDO_POR`, `ATENDIDO_NO_SETOR`, `ATENDIMENTO_ENCERRADO`, `TEM_TAG`, `CONTATO_PELO_CANAL`, `TRABALHA_EM`, `INTERESSADO_EM`, `TEM_NEGOCIACAO`, `AVALIA_PLANO`, `LEVANTOU_OBJECAO`, `COMPARA_COM` |
+| `Vendedor` | `ATENDIDO_POR` User → Vendedor |
+| `EmpresaCliente` | `TRABALHA_EM` User → EmpresaCliente |
+| `ProdutoUmbler` | `USA` User/Empresa → Produto/Plano (já é cliente) |
+| `Plano` | `AVALIA` User/Empresa → Produto/Plano (ainda não comprou) |
+| `Negociacao` | `TEM_NEGOCIACAO` User/Empresa → Negociacao |
+| `Necessidade` | `TEM_NECESSIDADE` User → Necessidade |
+| `Objecao` | `LEVANTOU_OBJECAO` User → Objecao |
+| `Concorrente` | `COMPARA_COM` User/Negociacao → Concorrente |
+| `Compromisso` | `COMBINOU` User/Vendedor → Compromisso |
 
-Os cinco primeiros tipos de aresta são escritos por nós via `fact_triple`; os
-demais são dicas para o extrator sobre o que procurar nas conversas. A
-quantidade máxima de tipos depende do plano do Zep; se a API recusar, remova
-tipos e rode o setup de novo. `GET /ontology` mostra o drift entre código e
-Zep; a API loga um aviso na subida.
+O limite de tipos é por plano e vale separadamente para entidades e arestas:
+Free 5, Flex 10, Flex Plus 20. Esta ontologia foi dimensionada para o
+**Flex**, com 1 + 1 de folga. `ATENDIDO_POR` é escrita por nós via
+`fact_triple`; `TEM_NEGOCIACAO` está reservada para deals do Pipedrive; as
+demais são dicas para o extrator. `GET /ontology` mostra o drift entre código
+e Zep; a API loga um aviso na subida.
 
 `ZEP_STRICT_ONTOLOGY=true` restringe a extração aos tipos acima. Reduz ruído
 (`SAUDOU`, `GREETS`...), mas descarta o que não se encaixa em nenhum tipo. Meça
@@ -198,7 +234,7 @@ app/
   talk/models.py        webhook do Talk (case-insensitive, campos do BasicChatModel)
   talk/normalize.py     Talk -> Zep: ids, papéis, texto de cada tipo de mensagem
   talk/members.py       nome dos atendentes (cache, arquivo, GET opcional)
-  pipeline/store.py     SQLite: diário/idempotência, mensagens, fatos, contatos, chats
+  pipeline/store/       Store: base.py (interface), mongo.py (produção), sqlite.py (dev/testes)
   pipeline/worker.py    fila + retentativa
   pipeline/handlers.py  evento -> escritas no Zep
   zep/users.py          user.add / update
@@ -213,13 +249,26 @@ tests/                  sem rede; Zep falso em conftest.py
 knowledge/              arquivos de conhecimento da Umbler
 ```
 
+## Implantação
+
+Container Docker com **um único processo** e MongoDB como Store:
+
+- Rode `uvicorn` sem `--workers` (ou com `--workers 1`). A fila é em memória
+  e é reidratada do Mongo na subida; dois processos processariam o mesmo
+  evento duas vezes.
+- Uma réplica só, por enquanto. O diário no Mongo já é compartilhável; para
+  várias réplicas falta apenas trocar a fila em memória por uma reivindicação
+  atômica no Mongo (`findOneAndUpdate` de `pending` para `processing`).
+- Sem `MONGODB_URI` a aplicação cai para SQLite em `data/`, que só serve para
+  desenvolvimento.
+
 ## Limitações conhecidas
 
 - **Latência do Zep.** Extração assíncrona: fatos e contexto levam minutos.
   Nunca espere a ingestão dentro do webhook.
-- **Mudança de setor/atendente.** Enviamos o fato novo com `valid_at`; a
-  invalidação do anterior fica a cargo do Zep (contradição). O SQLite guarda o
-  último estado por chat, então reenvios não duplicam.
+- **Troca de atendente.** Enviamos o fato novo com `valid_at`; a invalidação
+  do anterior fica a cargo do Zep (contradição). O Store guarda o último
+  estado por chat, então reenvios não duplicam.
 - **Idioma do resumo** do usuário é inconsistente mesmo com instrução (medido).
   Os fatos obedecem; se o idioma do resumo for crítico, valide na sua camada.
 - **Mídia.** Imagem, vídeo e arquivo entram como `[imagem] legenda`,

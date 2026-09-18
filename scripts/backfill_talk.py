@@ -33,7 +33,7 @@ load_dotenv()
 from zep_cloud.core.api_error import ApiError
 
 from app.config import get_settings
-from app.pipeline.store import Store
+from app.pipeline.store import Store, create_store
 from app.talk.members import MemberDirectory
 from app.talk.models import Chat, Message, lower_keys, to_rfc3339
 from app.talk.normalize import (
@@ -198,7 +198,7 @@ async def backfill_chat(
 async def main(days: int, state: str, chat_id: str | None, dry_run: bool, limit: int) -> int:
     settings = get_settings()
     reader = TalkReader()
-    store = Store(settings.database_path)
+    store = create_store(settings)
     await store.open()
     members = MemberDirectory(store, settings)
     await members.load()
