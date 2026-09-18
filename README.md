@@ -294,14 +294,26 @@ variável `EDGE_MODE`:
 O script confere: em modo `caddy`, se 80 ou 443 já estiverem ocupadas por
 outro serviço, o deploy para com a instrução de usar `port`.
 
-Em modo `port`, um bloco de nginx para o proxy existente:
+Em modo `port`, o vhost do nginx no host (`/etc/nginx/conf.d/talk-zep.conf`).
+Atenção: o webhook do Talk não envia credenciais, então **nenhuma
+autenticação básica** pode valer para `/webhooks/talk`. O Swagger e os
+endpoints de leitura podem ficar protegidos, se quiser.
 
 ```nginx
 server {
+    listen 80;
+    server_name talk-zep-integration.artigas.app;
+    return 301 https://$host$request_uri;
+}
+
+server {
     listen 443 ssl http2;
     server_name talk-zep-integration.artigas.app;
-    # ssl_certificate / ssl_certificate_key conforme o certbot do host
+    ssl_certificate     /etc/letsencrypt/live/talk-zep-integration.artigas.app/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/talk-zep-integration.artigas.app/privkey.pem;
+
     location / {
+        auth_basic off;   # sem herdar auth do server padrão
         proxy_pass http://127.0.0.1:8081;
         proxy_set_header Host $host;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
@@ -309,6 +321,16 @@ server {
         proxy_read_timeout 60s;
     }
 }
+```
+
+Certificado com certbot (o registro A já deve apontar para a EC2):
+
+```bash
+sudo certbot certonly --nginx -d talk-zep-integration.artigas.app
+```
+
+```bash
+sudo nginx -t && sudo systemctl reload nginx
 ```
 
 Pré-requisitos na EC2: Docker instalado e o DNS `talk-zep-integration.artigas.app`
