@@ -1,0 +1,17 @@
+.venv/
+.git/
+.github/
+.claude/
+.pytest_cache/
+.ruff_cache/
+__pycache__/
+*.pyc
+.env
+.env.*
+members.json
+tests/
+data/
+*.jsonl
+*.md
+!README.md
+!knowledge/*.md

@@ -16,13 +16,15 @@ API FastAPI que recebe webhooks do Umbler Talk e alimenta a memoria no Zep.
 ## Comandos
 
 ```bash
-.venv/Scripts/activate
+docker compose up --build          # unica forma de subir a API local (igual a producao)
+docker compose run --rm api python -m scripts.setup_zep
+.venv/Scripts/activate             # venv so para testes e lint
 pip install -r requirements-dev.txt
 pytest -q
 ruff check .
-uvicorn app.main:app --reload
-python -m scripts.setup_zep
 ```
+
+Nunca suba a API com uvicorn direto no host; o usuario quer dev identico a prod.
 
 ## Onde esta cada coisa
 

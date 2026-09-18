@@ -1,0 +1,23 @@
+# Uso local, identico ao container de producao. O MongoDB e externo (URI no .env).
+#
+#   docker compose up --build        # sobe em http://localhost:8000 (Swagger em /docs)
+#   docker compose logs -f api
+#   docker compose down
+#
+# Para rodar um script dentro da mesma imagem:
+#   docker compose run --rm api python -m scripts.setup_zep
+#   docker compose run --rm api python -m scripts.show_contact
+services:
+  api:
+    build: .
+    image: talk-zep-integration:local
+    container_name: talk-zep-api
+    env_file: .env
+    ports:
+      - "8000:8000"
+    volumes:
+      # Conhecimento da Umbler editado no host, lido pelo scripts.load_knowledge.
+      - ./knowledge:/app/knowledge:ro
+      # Se usar o mapa manual de atendentes, crie members.json e descomente:
+      # - ./members.json:/app/members.json:ro
+    restart: unless-stopped

@@ -105,10 +105,10 @@ python -m scripts.setup_zep
 Isso cria o grafo da Umbler, aplica a ontologia e as instruções de idioma.
 Instruções customizadas só existem nos planos Flex Plus e Enterprise; em
 outros planos o passo 3 avisa e o restante do setup segue válido. Depois suba
-a API:
+a API em Docker (ver "Rodando local"):
 
 ```bash
-uvicorn app.main:app --host 0.0.0.0 --port 8000
+docker compose up --build
 ```
 
 Documentação interativa em `/docs`. Rode os testes com `pytest -q`: não usam o
@@ -249,6 +249,31 @@ scripts/                setup_zep, load_knowledge, backfill_talk, replay_events,
 tests/                  Zep falso em conftest.py; MongoDB real num banco descartável
 knowledge/              arquivos de conhecimento da Umbler
 ```
+
+## Rodando local (sempre em Docker)
+
+Local e produção usam a mesma imagem (`Dockerfile`), para que o que roda na
+sua máquina seja o que vai para o servidor. O MongoDB é externo, via `.env`.
+
+```bash
+docker compose up --build
+```
+
+Swagger em <http://localhost:8000/docs>. Scripts rodam dentro da mesma
+imagem:
+
+```bash
+docker compose run --rm api python -m scripts.setup_zep
+```
+
+```bash
+docker compose run --rm api python -m scripts.load_knowledge
+```
+
+O `.env` entra por `env_file` e nunca é copiado para a imagem
+(`.dockerignore`). A pasta `knowledge/` é montada do host. Para usar o mapa
+manual de atendentes, crie `members.json` e descomente o volume no
+`docker-compose.yml`.
 
 ## Implantação
 
