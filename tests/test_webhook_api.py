@@ -7,8 +7,23 @@ from tests.conftest import sample_event
 
 @pytest.fixture
 def client():
-    with TestClient(create_app()) as c:
+    with TestClient(create_app(), headers={"X-API-Key": "chave-de-teste"}) as c:
         yield c
+
+
+def test_api_key_protects_everything_but_webhook_and_health(client):
+    anon = {"X-API-Key": ""}
+    assert client.get("/health", headers=anon).status_code == 200
+    assert client.get("/admin/events", headers=anon).status_code == 401
+    assert client.get("/contacts", headers=anon).status_code == 401
+    assert client.post("/search", json={"query": "x"}, headers=anon).status_code == 401
+    assert client.get("/admin/events", headers={"X-API-Key": "errada"}).status_code == 401
+    # o webhook usa o proprio token, nao a chave de API
+    r = client.post(
+        "/webhooks/talk", params={"token": "segredo"}, json=sample_event(), headers=anon
+    )
+    assert r.status_code == 202
+    assert client.get("/admin/events").status_code == 200
 
 
 def test_rejects_without_token(client):

@@ -132,6 +132,21 @@ Zep real (há um fake em `tests/conftest.py`), mas precisam do MongoDB do
 
 `contact_id` é o id do contato **no Talk** (o `user_id` do Zep é derivado).
 
+### Autenticação
+
+Não há autenticação básica no nginx; a proteção é da própria API, em duas
+camadas independentes:
+
+| Rotas | Como autenticar |
+|---|---|
+| `POST /webhooks/talk` | `?token=<WEBHOOK_TOKEN>` ou header `X-Webhook-Token` (o Talk não envia headers customizados, use a query) |
+| `GET /health` | pública (healthcheck do container e do proxy; não devolve dado de cliente) |
+| todas as demais | header `X-API-Key: <API_KEY>` |
+
+No Swagger, o botão **Authorize** recebe a `X-API-Key`. Gere a chave com
+`openssl rand -hex 32`. Com `API_KEY` vazia a verificação fica desligada e a
+aplicação avisa na subida; isso só serve para desenvolvimento.
+
 ### Duas memórias, sempre
 
 Medido no projeto anterior: uma mensagem gravada aparece em
@@ -295,9 +310,8 @@ O script confere: em modo `caddy`, se 80 ou 443 já estiverem ocupadas por
 outro serviço, o deploy para com a instrução de usar `port`.
 
 Em modo `port`, o vhost do nginx no host (`/etc/nginx/conf.d/talk-zep.conf`).
-Atenção: o webhook do Talk não envia credenciais, então **nenhuma
-autenticação básica** pode valer para `/webhooks/talk`. O Swagger e os
-endpoints de leitura podem ficar protegidos, se quiser.
+Sem autenticação básica: o webhook do Talk não envia credenciais e as demais
+rotas já exigem `X-API-Key` na própria aplicação.
 
 ```nginx
 server {
@@ -344,7 +358,7 @@ Configure em Settings → Secrets and variables → Actions:
 | `EC2_HOST` | IP público ou hostname da EC2 |
 | `EC2_USER` | usuário SSH (`ec2-user` no Amazon Linux, `ubuntu` no Ubuntu) |
 | `SSH_PRIVATE_KEY` | conteúdo completo do `.pem` |
-| `ZEP_API_KEY`, `WEBHOOK_TOKEN`, `MONGODB_URI` | os mesmos do `.env` |
+| `ZEP_API_KEY`, `WEBHOOK_TOKEN`, `API_KEY`, `MONGODB_URI` | os mesmos do `.env` |
 | `TALK_API_TOKEN`, `TALK_ORGANIZATION_ID` | opcionais, só leitura |
 | `GHCR_READ_TOKEN` | **opcional.** Personal Access Token com `read:packages`. Sem ele, a EC2 puxa a imagem com o `GITHUB_TOKEN` da própria execução. Só é útil para `docker pull` manual na EC2 fora do workflow (rollback). |
 

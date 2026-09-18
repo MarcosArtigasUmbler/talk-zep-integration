@@ -31,6 +31,7 @@ os.environ.update(
         "ZEP_API_KEY": "test-key",
         "ZEP_ORG_GRAPH_ID": "umbler_teste",
         "WEBHOOK_TOKEN": "segredo",
+        "API_KEY": "chave-de-teste",
         "MONGODB_URI": MONGODB_URI,
         "MONGODB_USERNAME": os.getenv("MONGODB_USERNAME") or _ENV.get("MONGODB_USERNAME") or "",
         "MONGODB_PASSWORD": os.getenv("MONGODB_PASSWORD") or _ENV.get("MONGODB_PASSWORD") or "",

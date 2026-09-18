@@ -16,9 +16,10 @@ from __future__ import annotations
 import logging
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI
 
 from app.api import admin, knowledge, memory, webhook
+from app.api.auth import require_api_key
 from app.config import get_settings
 from app.pipeline.store import create_store
 from app.pipeline.worker import Worker
@@ -47,6 +48,8 @@ def create_app() -> FastAPI:
 
         if not settings.webhook_token:
             log.warning("WEBHOOK_TOKEN vazio: qualquer um pode postar em /webhooks/talk")
+        if not settings.api_key:
+            log.warning("API_KEY vazia: rotas de leitura e admin abertas sem autenticacao")
 
         worker: Worker | None = None
         if settings.start_worker:
@@ -77,10 +80,13 @@ def create_app() -> FastAPI:
         version="0.1.0",
         lifespan=lifespan,
     )
+    # O webhook tem o proprio token e /health e publico; todo o resto exige X-API-Key.
     app.include_router(webhook.router)
-    app.include_router(memory.router)
-    app.include_router(knowledge.router)
-    app.include_router(admin.router)
+    app.include_router(admin.health_router)
+    protected = [Depends(require_api_key)]
+    app.include_router(memory.router, dependencies=protected)
+    app.include_router(knowledge.router, dependencies=protected)
+    app.include_router(admin.router, dependencies=protected)
     return app
 
 

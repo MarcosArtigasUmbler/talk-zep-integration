@@ -10,8 +10,12 @@ from app.zep.ontology import verify_ontology
 
 router = APIRouter(tags=["admin"])
 
+# /health fica fora da chave de API: o HEALTHCHECK do container e o balanceador
+# precisam chamar sem credencial. Ele nao devolve dado de cliente.
+health_router = APIRouter(tags=["admin"])
 
-@router.get("/health", response_model=HealthResponse)
+
+@health_router.get("/health", response_model=HealthResponse)
 async def health(request: Request) -> HealthResponse:
     worker = getattr(request.app.state, "worker", None)
     return HealthResponse(

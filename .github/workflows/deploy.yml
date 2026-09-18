@@ -12,7 +12,7 @@
 #
 # Secrets (Settings > Secrets and variables > Actions > Secrets):
 #   EC2_HOST, EC2_USER, SSH_PRIVATE_KEY
-#   ZEP_API_KEY, WEBHOOK_TOKEN, MONGODB_URI
+#   ZEP_API_KEY, WEBHOOK_TOKEN, API_KEY, MONGODB_URI
 #   TALK_API_TOKEN, TALK_ORGANIZATION_ID   (opcionais, so leitura)
 #   GHCR_READ_TOKEN                        (opcional: PAT read:packages; sem ele
 #                                           usa o GITHUB_TOKEN da propria execucao)
@@ -93,6 +93,7 @@ jobs:
           # --- runtime (segredos) ---
           ZEP_API_KEY: ${{ secrets.ZEP_API_KEY }}
           WEBHOOK_TOKEN: ${{ secrets.WEBHOOK_TOKEN }}
+          API_KEY: ${{ secrets.API_KEY }}
           MONGODB_URI: ${{ secrets.MONGODB_URI }}
           TALK_API_TOKEN: ${{ secrets.TALK_API_TOKEN }}
           TALK_ORGANIZATION_ID: ${{ secrets.TALK_ORGANIZATION_ID }}
@@ -108,12 +109,12 @@ jobs:
           host: ${{ secrets.EC2_HOST }}
           username: ${{ secrets.EC2_USER }}
           key: ${{ secrets.SSH_PRIVATE_KEY }}
-          envs: IMAGE,PROJECT,GHCR_TOKEN,GHCR_USER,EDGE_MODE,APP_PORT,APP_DOMAIN,ACME_EMAIL,ZEP_API_KEY,WEBHOOK_TOKEN,MONGODB_URI,TALK_API_TOKEN,TALK_ORGANIZATION_ID,ZEP_ORG_GRAPH_ID,MONGODB_DB,LOG_LEVEL,WORKERS,INGEST_GROUP_CHATS,INGEST_PRIVATE_NOTES,ZEP_STRICT_ONTOLOGY
+          envs: IMAGE,PROJECT,GHCR_TOKEN,GHCR_USER,EDGE_MODE,APP_PORT,APP_DOMAIN,ACME_EMAIL,ZEP_API_KEY,WEBHOOK_TOKEN,API_KEY,MONGODB_URI,TALK_API_TOKEN,TALK_ORGANIZATION_ID,ZEP_ORG_GRAPH_ID,MONGODB_DB,LOG_LEVEL,WORKERS,INGEST_GROUP_CHATS,INGEST_PRIVATE_NOTES,ZEP_STRICT_ONTOLOGY
           script: |
             set -e
 
-            if [ -z "$ZEP_API_KEY" ] || [ -z "$MONGODB_URI" ] || [ -z "$WEBHOOK_TOKEN" ]; then
-              echo "Secrets obrigatorios ausentes: ZEP_API_KEY, MONGODB_URI e WEBHOOK_TOKEN" >&2
+            if [ -z "$ZEP_API_KEY" ] || [ -z "$MONGODB_URI" ] || [ -z "$WEBHOOK_TOKEN" ] || [ -z "$API_KEY" ]; then
+              echo "Secrets obrigatorios ausentes: ZEP_API_KEY, MONGODB_URI, WEBHOOK_TOKEN e API_KEY" >&2
               exit 1
             fi
             case "$EDGE_MODE" in caddy|port) ;; *) echo "EDGE_MODE invalido: $EDGE_MODE (use caddy ou port)" >&2; exit 1;; esac
@@ -165,6 +166,7 @@ jobs:
             ZEP_ORG_GRAPH_ID=${ZEP_ORG_GRAPH_ID}
             ZEP_STRICT_ONTOLOGY=${ZEP_STRICT_ONTOLOGY}
             WEBHOOK_TOKEN=${WEBHOOK_TOKEN}
+            API_KEY=${API_KEY}
             INGEST_GROUP_CHATS=${INGEST_GROUP_CHATS}
             INGEST_PRIVATE_NOTES=${INGEST_PRIVATE_NOTES}
             MONGODB_URI=${MONGODB_URI}

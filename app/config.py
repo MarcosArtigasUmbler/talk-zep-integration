@@ -16,9 +16,11 @@ class Settings(BaseSettings):
     """Grafo avulso (graph_id) com o conhecimento da Umbler. Nunca dado de cliente."""
     zep_strict_ontology: bool = False
 
-    # --- Webhook -------------------------------------------------------------
+    # --- Autenticacao --------------------------------------------------------
     webhook_token: str = ""
-    """Segredo compartilhado. Vazio desliga a verificacao (so em desenvolvimento)."""
+    """Token do webhook do Talk (?token= ou X-Webhook-Token). Vazio desliga (so dev)."""
+    api_key: str = ""
+    """X-API-Key das rotas de leitura/admin. Vazio desliga a verificacao (so dev)."""
     ingest_group_chats: bool = False
     ingest_private_notes: bool = True
 
