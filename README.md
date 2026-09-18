@@ -309,9 +309,13 @@ variável `EDGE_MODE`:
 O script confere: em modo `caddy`, se 80 ou 443 já estiverem ocupadas por
 outro serviço, o deploy para com a instrução de usar `port`.
 
-Em modo `port`, o vhost do nginx no host (`/etc/nginx/conf.d/talk-zep.conf`).
-Sem autenticação básica: o webhook do Talk não envia credenciais e as demais
-rotas já exigem `X-API-Key` na própria aplicação.
+Em modo `port`, se o host tem nginx, certbot e `sudo` sem senha, o próprio
+deploy cria o vhost `/etc/nginx/conf.d/talk-zep-integration.conf` e emite o
+certificado com `certbot --nginx` na primeira execução (`NGINX_AUTO=true`,
+padrão). Nada é alterado se o arquivo ou o certificado já existirem. Para
+fazer à mão, defina `NGINX_AUTO=false` e use o bloco abaixo. Sem autenticação
+básica: o webhook do Talk não envia credenciais e as demais rotas já exigem
+`X-API-Key` na própria aplicação.
 
 ```nginx
 server {
@@ -328,7 +332,7 @@ server {
 
     location / {
         auth_basic off;   # sem herdar auth do server padrão
-        proxy_pass http://127.0.0.1:8081;
+        proxy_pass http://127.0.0.1:8090;   # = APP_PORT
         proxy_set_header Host $host;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto https;

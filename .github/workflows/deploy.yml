@@ -88,6 +88,8 @@ jobs:
           GHCR_USER: ${{ github.actor }}
           EDGE_MODE: ${{ vars.EDGE_MODE || 'caddy' }}
           APP_PORT: ${{ vars.APP_PORT || '8081' }}
+          # Em modo port: cria o vhost do nginx e o certificado (certbot) se faltarem.
+          NGINX_AUTO: ${{ vars.NGINX_AUTO || 'true' }}
           APP_DOMAIN: ${{ vars.APP_DOMAIN || 'talk-zep-integration.artigas.app' }}
           ACME_EMAIL: ${{ vars.ACME_EMAIL || '' }}
           # --- runtime (segredos) ---
@@ -109,7 +111,7 @@ jobs:
           host: ${{ secrets.EC2_HOST }}
           username: ${{ secrets.EC2_USER }}
           key: ${{ secrets.SSH_PRIVATE_KEY }}
-          envs: IMAGE,PROJECT,GHCR_TOKEN,GHCR_USER,EDGE_MODE,APP_PORT,APP_DOMAIN,ACME_EMAIL,ZEP_API_KEY,WEBHOOK_TOKEN,API_KEY,MONGODB_URI,TALK_API_TOKEN,TALK_ORGANIZATION_ID,ZEP_ORG_GRAPH_ID,MONGODB_DB,LOG_LEVEL,WORKERS,INGEST_GROUP_CHATS,INGEST_PRIVATE_NOTES,ZEP_STRICT_ONTOLOGY
+          envs: IMAGE,PROJECT,GHCR_TOKEN,GHCR_USER,EDGE_MODE,APP_PORT,NGINX_AUTO,APP_DOMAIN,ACME_EMAIL,ZEP_API_KEY,WEBHOOK_TOKEN,API_KEY,MONGODB_URI,TALK_API_TOKEN,TALK_ORGANIZATION_ID,ZEP_ORG_GRAPH_ID,MONGODB_DB,LOG_LEVEL,WORKERS,INGEST_GROUP_CHATS,INGEST_PRIVATE_NOTES,ZEP_STRICT_ONTOLOGY
           script: |
             set -e
 
@@ -256,6 +258,57 @@ jobs:
 
             docker compose ps
             docker image prune -f
+
+            # Modo port + nginx no host: vhost e certificado, so se ainda nao existirem.
+            if [ "$EDGE_MODE" = "port" ] && [ "$NGINX_AUTO" = "true" ]; then
+              if ! command -v nginx >/dev/null 2>&1 || ! sudo -n true 2>/dev/null; then
+                echo "nginx ou sudo sem senha indisponivel; configure o proxy manualmente (README > Deploy)."
+              else
+                CONF="/etc/nginx/conf.d/${PROJECT}.conf"
+                if [ ! -f "$CONF" ]; then
+                  echo "Criando vhost $CONF -> 127.0.0.1:${APP_PORT}"
+                  sudo tee "$CONF" >/dev/null <<NGINX
+            server {
+                listen 80;
+                server_name ${APP_DOMAIN};
+
+                location / {
+                    auth_basic         off;
+                    proxy_pass         http://127.0.0.1:${APP_PORT};
+                    proxy_http_version 1.1;
+                    proxy_set_header   Host              \$host;
+                    proxy_set_header   X-Real-IP         \$remote_addr;
+                    proxy_set_header   X-Forwarded-For   \$proxy_add_x_forwarded_for;
+                    proxy_set_header   X-Forwarded-Proto \$scheme;
+                    proxy_read_timeout 60s;
+                }
+            }
+            NGINX
+                  sudo nginx -t && sudo systemctl reload nginx
+                fi
+                if command -v certbot >/dev/null 2>&1; then
+                  if ! sudo certbot certificates 2>/dev/null | grep -Eq "Domains:.*(^| )${APP_DOMAIN}( |$)"; then
+                    echo "Emitindo certificado Let's Encrypt para ${APP_DOMAIN}"
+                    if [ -n "$ACME_EMAIL" ]; then EMAIL_FLAG="-m ${ACME_EMAIL}"; else EMAIL_FLAG="--register-unsafely-without-email"; fi
+                    sudo certbot --nginx -d "$APP_DOMAIN" --non-interactive --agree-tos --redirect $EMAIL_FLAG
+                  else
+                    echo "Certificado para ${APP_DOMAIN} ja existe"
+                  fi
+                else
+                  echo "certbot nao encontrado; emita o certificado manualmente."
+                fi
+                # Confirma de fora para dentro.
+                for i in $(seq 1 10); do
+                  if curl -fsS -m 5 "https://${APP_DOMAIN}/health" >/dev/null 2>&1; then
+                    echo "https://${APP_DOMAIN}/health OK"
+                    break
+                  fi
+                  [ "$i" -eq 10 ] && echo "AVISO: https://${APP_DOMAIN}/health ainda nao responde"
+                  sleep 3
+                done
+              fi
+            fi
+
             if [ "$EDGE_MODE" = "port" ]; then
               echo "Deploy concluido: $IMAGE:latest em 127.0.0.1:${APP_PORT} (proxy externo -> https://${APP_DOMAIN})"
             else
