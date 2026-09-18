@@ -1,0 +1,220 @@
+# Build da imagem -> push no GHCR -> deploy na EC2 via SSH (compose gerado na hora).
+#
+# Disparo manual (workflow_dispatch): deploy e uma decisao explicita.
+# A mesma imagem que roda local (docker compose up) e a que vai para producao.
+# Na EC2 sobem dois containers: a API e um Caddy que termina TLS (Let's Encrypt)
+# para o dominio APP_DOMAIN e faz proxy para a API.
+#
+# Secrets (Settings > Secrets and variables > Actions > Secrets):
+#   EC2_HOST, EC2_USER, SSH_PRIVATE_KEY, GHCR_READ_TOKEN
+#   ZEP_API_KEY, WEBHOOK_TOKEN, MONGODB_URI
+#   TALK_API_TOKEN, TALK_ORGANIZATION_ID          (opcionais, so leitura)
+# Variables (aba Variables) -- opcionais, com padrao aqui:
+#   APP_DOMAIN (talk-zep-integration.artigas.app), ACME_EMAIL (vazio),
+#   ZEP_ORG_GRAPH_ID (umbler_kb), MONGODB_DB (talk_zep), LOG_LEVEL (INFO),
+#   WORKERS (4), INGEST_GROUP_CHATS (false), INGEST_PRIVATE_NOTES (true),
+#   ZEP_STRICT_ONTOLOGY (false)
+
+name: Build & Deploy
+
+on:
+  workflow_dispatch:
+    inputs:
+      note:
+        description: "Motivo do deploy (fica no historico da execucao)"
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  PROJECT: talk-zep-integration
+
+jobs:
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install ruff==0.16.8
+      - run: ruff check .
+      - run: ruff format --check .
+
+  build-and-deploy:
+    name: Build image & deploy to EC2
+    needs: lint
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Image name (lowercase)
+        run: echo "IMAGE=ghcr.io/$(echo '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')/${PROJECT}" >> "$GITHUB_ENV"
+
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: true
+          tags: |
+            ${{ env.IMAGE }}:latest
+            ${{ env.IMAGE }}:${{ github.sha }}
+
+      - name: Deploy to EC2 via SSH
+        uses: appleboy/ssh-action@v1
+        env:
+          GHCR_READ_TOKEN: ${{ secrets.GHCR_READ_TOKEN }}
+          GHCR_USER: ${{ github.actor }}
+          APP_DOMAIN: ${{ vars.APP_DOMAIN || 'talk-zep-integration.artigas.app' }}
+          ACME_EMAIL: ${{ vars.ACME_EMAIL || '' }}
+          # --- runtime (segredos) ---
+          ZEP_API_KEY: ${{ secrets.ZEP_API_KEY }}
+          WEBHOOK_TOKEN: ${{ secrets.WEBHOOK_TOKEN }}
+          MONGODB_URI: ${{ secrets.MONGODB_URI }}
+          TALK_API_TOKEN: ${{ secrets.TALK_API_TOKEN }}
+          TALK_ORGANIZATION_ID: ${{ secrets.TALK_ORGANIZATION_ID }}
+          # --- runtime (configuracao) ---
+          ZEP_ORG_GRAPH_ID: ${{ vars.ZEP_ORG_GRAPH_ID || 'umbler_kb' }}
+          MONGODB_DB: ${{ vars.MONGODB_DB || 'talk_zep' }}
+          LOG_LEVEL: ${{ vars.LOG_LEVEL || 'INFO' }}
+          WORKERS: ${{ vars.WORKERS || '4' }}
+          INGEST_GROUP_CHATS: ${{ vars.INGEST_GROUP_CHATS || 'false' }}
+          INGEST_PRIVATE_NOTES: ${{ vars.INGEST_PRIVATE_NOTES || 'true' }}
+          ZEP_STRICT_ONTOLOGY: ${{ vars.ZEP_STRICT_ONTOLOGY || 'false' }}
+        with:
+          host: ${{ secrets.EC2_HOST }}
+          username: ${{ secrets.EC2_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          envs: IMAGE,PROJECT,GHCR_READ_TOKEN,GHCR_USER,APP_DOMAIN,ACME_EMAIL,ZEP_API_KEY,WEBHOOK_TOKEN,MONGODB_URI,TALK_API_TOKEN,TALK_ORGANIZATION_ID,ZEP_ORG_GRAPH_ID,MONGODB_DB,LOG_LEVEL,WORKERS,INGEST_GROUP_CHATS,INGEST_PRIVATE_NOTES,ZEP_STRICT_ONTOLOGY
+          script: |
+            set -e
+
+            if [ -z "$ZEP_API_KEY" ] || [ -z "$MONGODB_URI" ] || [ -z "$WEBHOOK_TOKEN" ]; then
+              echo "Secrets obrigatorios ausentes: ZEP_API_KEY, MONGODB_URI e WEBHOOK_TOKEN" >&2
+              exit 1
+            fi
+
+            # docker compose (plugin) sem depender de gerenciador de pacotes.
+            if ! docker compose version >/dev/null 2>&1; then
+              echo "Instalando docker compose plugin..."
+              DOCKER_CONFIG=${DOCKER_CONFIG:-$HOME/.docker}
+              mkdir -p "$DOCKER_CONFIG/cli-plugins"
+              curl -SL "https://github.com/docker/compose/releases/latest/download/docker-compose-linux-$(uname -m)" \
+                -o "$DOCKER_CONFIG/cli-plugins/docker-compose"
+              chmod +x "$DOCKER_CONFIG/cli-plugins/docker-compose"
+              docker compose version
+            fi
+
+            IMAGE=$(echo "$IMAGE" | tr '[:upper:]' '[:lower:]')
+
+            # Login no GHCR via config temporario (evita credential helper sem TTY).
+            DIR=$(mktemp -d)
+            AUTH=$(printf '%s:%s' "$GHCR_USER" "$GHCR_READ_TOKEN" | base64 -w0)
+            cat > "$DIR/config.json" <<CONF
+            {"auths":{"ghcr.io":{"auth":"$AUTH"}}}
+            CONF
+            DOCKER_CONFIG="$DIR" docker pull "$IMAGE:latest"
+            rm -rf "$DIR"
+
+            APP_DIR="$HOME/$PROJECT"
+            mkdir -p "$APP_DIR"
+            chmod 700 "$APP_DIR"
+
+            # Caddy: TLS automatico (Let's Encrypt) para o dominio e proxy para a API.
+            {
+              if [ -n "$ACME_EMAIL" ]; then
+                printf '{\n  email %s\n}\n' "$ACME_EMAIL"
+              fi
+              printf '%s {\n  encode gzip\n  reverse_proxy api:8000\n}\n' "$APP_DOMAIN"
+            } > "$APP_DIR/Caddyfile"
+
+            # Variaveis de runtime num arquivo 600 dentro de um diretorio 700.
+            # Fica em disco para permitir `docker compose up -d` manual (rollback).
+            umask 077
+            cat > "$APP_DIR/.env.runtime" <<ENVF
+            ZEP_API_KEY=${ZEP_API_KEY}
+            ZEP_ORG_GRAPH_ID=${ZEP_ORG_GRAPH_ID}
+            ZEP_STRICT_ONTOLOGY=${ZEP_STRICT_ONTOLOGY}
+            WEBHOOK_TOKEN=${WEBHOOK_TOKEN}
+            INGEST_GROUP_CHATS=${INGEST_GROUP_CHATS}
+            INGEST_PRIVATE_NOTES=${INGEST_PRIVATE_NOTES}
+            MONGODB_URI=${MONGODB_URI}
+            MONGODB_DB=${MONGODB_DB}
+            WORKERS=${WORKERS}
+            TALK_API_TOKEN=${TALK_API_TOKEN}
+            TALK_ORGANIZATION_ID=${TALK_ORGANIZATION_ID}
+            LOG_LEVEL=${LOG_LEVEL}
+            ENVF
+            umask 022
+
+            cat > "$APP_DIR/docker-compose.yml" <<COMPOSE
+            services:
+              api:
+                image: ${IMAGE}:latest
+                container_name: talk-zep-api
+                restart: unless-stopped
+                env_file: .env.runtime
+                expose:
+                  - "8000"
+                logging:
+                  driver: json-file
+                  options: { max-size: "10m", max-file: "3" }
+              caddy:
+                image: caddy:2-alpine
+                container_name: talk-zep-caddy
+                restart: unless-stopped
+                ports:
+                  - "80:80"
+                  - "443:443"
+                  - "443:443/udp"
+                volumes:
+                  - ./Caddyfile:/etc/caddy/Caddyfile:ro
+                  - caddy_data:/data
+                  - caddy_config:/config
+                depends_on:
+                  - api
+                logging:
+                  driver: json-file
+                  options: { max-size: "10m", max-file: "3" }
+            volumes:
+              caddy_data:
+              caddy_config:
+            COMPOSE
+
+            cd "$APP_DIR"
+            # Remove containers de versoes antigas do deploy (docker run avulso).
+            docker stop talk-zep-api talk-zep-caddy 2>/dev/null || true
+            docker rm talk-zep-api talk-zep-caddy 2>/dev/null || true
+            docker compose up -d --remove-orphans
+
+            # Espera o healthcheck da imagem da API.
+            for i in $(seq 1 30); do
+              STATUS=$(docker inspect --format '{{.State.Health.Status}}' talk-zep-api 2>/dev/null || echo starting)
+              if [ "$STATUS" = "healthy" ]; then
+                echo "API saudavel"
+                break
+              fi
+              if [ "$i" -eq 30 ]; then
+                echo "API nao ficou saudavel; ultimos logs:" >&2
+                docker logs --tail 50 talk-zep-api >&2
+                exit 1
+              fi
+              sleep 3
+            done
+
+            docker compose ps
+            docker image prune -f
+            echo "Deploy concluido: $IMAGE:latest em https://${APP_DOMAIN}"

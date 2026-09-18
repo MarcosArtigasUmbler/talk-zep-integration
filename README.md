@@ -246,6 +246,9 @@ app/
   zep/ontology.py       tipos de entidade/aresta + drift check
   zep/instructions.py   instruções de idioma/domínio
 scripts/                setup_zep, load_knowledge, backfill_talk, replay_events, show_contact
+Dockerfile              imagem única (local e produção)
+docker-compose.yml      uso local
+.github/workflows/      deploy.yml: lint → build → GHCR → EC2
 tests/                  Zep falso em conftest.py; MongoDB real num banco descartável
 knowledge/              arquivos de conhecimento da Umbler
 ```
@@ -274,6 +277,48 @@ O `.env` entra por `env_file` e nunca é copiado para a imagem
 (`.dockerignore`). A pasta `knowledge/` é montada do host. Para usar o mapa
 manual de atendentes, crie `members.json` e descomente o volume no
 `docker-compose.yml`.
+
+## Deploy (GitHub Actions → GHCR → EC2)
+
+O workflow `.github/workflows/deploy.yml` roda **só por disparo manual**
+(Actions → Build & Deploy → Run workflow): lint, build da imagem, push no
+GitHub Container Registry com as tags `latest` e `<sha>`, e deploy via SSH na
+EC2. Na EC2 sobem dois containers, via compose gerado na hora:
+
+- `talk-zep-api`: a API, sem porta exposta no host;
+- `talk-zep-caddy`: Caddy nas portas 80/443, que emite o certificado
+  Let's Encrypt para `talk-zep-integration.artigas.app` e faz proxy para a API.
+
+Pré-requisitos na EC2: Docker instalado, portas 80 e 443 abertas no security
+group, e o DNS `talk-zep-integration.artigas.app` apontando para o IP público
+(registro A). O certificado é emitido no primeiro deploy, em segundos, desde
+que o DNS já esteja propagado.
+
+Configure em Settings → Secrets and variables → Actions:
+
+| Secret | O que é |
+|---|---|
+| `EC2_HOST` | IP público ou hostname da EC2 |
+| `EC2_USER` | usuário SSH (`ec2-user` no Amazon Linux, `ubuntu` no Ubuntu) |
+| `SSH_PRIVATE_KEY` | conteúdo completo do `.pem` |
+| `GHCR_READ_TOKEN` | Personal Access Token com escopo `read:packages` (não é o `GITHUB_TOKEN`) |
+| `ZEP_API_KEY`, `WEBHOOK_TOKEN`, `MONGODB_URI` | os mesmos do `.env` |
+| `TALK_API_TOKEN`, `TALK_ORGANIZATION_ID` | opcionais, só leitura |
+
+Variáveis (aba Variables), todas opcionais: `APP_DOMAIN` (padrão
+`talk-zep-integration.artigas.app`), `ACME_EMAIL` (e-mail para avisos do
+Let's Encrypt), `ZEP_ORG_GRAPH_ID` (`umbler_kb`), `MONGODB_DB` (`talk_zep`),
+`LOG_LEVEL`, `WORKERS`, `INGEST_GROUP_CHATS`, `INGEST_PRIVATE_NOTES`,
+`ZEP_STRICT_ONTOLOGY`.
+
+Depois do primeiro deploy, a URL a cadastrar no Talk é
+`https://talk-zep-integration.artigas.app/webhooks/talk?token=<WEBHOOK_TOKEN>`
+e o Swagger fica em `https://talk-zep-integration.artigas.app/docs`.
+
+Os arquivos gerados ficam em `~/talk-zep-integration/` na EC2 (diretório
+700): `Caddyfile`, `docker-compose.yml` e `.env.runtime` (600, com os
+segredos). Para voltar uma versão, edite o `image:` do compose para a tag
+`<sha>` do commit anterior e rode `docker compose up -d` nessa pasta.
 
 ## Implantação
 
