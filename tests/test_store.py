@@ -3,8 +3,8 @@
 from app.pipeline.store import STATUS_DONE, STATUS_FAILED, fact_key
 
 
-async def test_event_idempotency(any_store):
-    store = any_store
+async def test_event_idempotency(store):
+
     assert await store.record_event("e1", "Message", "d", {"a": 1}) is True
     assert await store.record_event("e1", "Message", "d", {"a": 1}) is False
     row = await store.get_event("e1")
@@ -33,8 +33,8 @@ async def test_event_idempotency(any_store):
     assert await store.get_event("nope") is None
 
 
-async def test_messages_and_facts(any_store):
-    store = any_store
+async def test_messages_and_facts(store):
+
     assert await store.message_seen("m1") is False
     await store.mark_messages([("m1", "e1", "t1"), ("m2", "e1", "t1")])
     await store.mark_messages([("m1", "e2", "t1")])  # repetido nao quebra
@@ -49,8 +49,8 @@ async def test_messages_and_facts(any_store):
     assert await store.fact_seen(k) is True
 
 
-async def test_contacts_with_tags(any_store):
-    store = any_store
+async def test_contacts_with_tags(store):
+
     assert await store.contact_fingerprint("u") is None
     assert await store.get_contact("u") is None
     await store.upsert_contact("u", "c", "Nome", "+55", "fp1", tags=["Lead quente"])
@@ -65,8 +65,8 @@ async def test_contacts_with_tags(any_store):
     assert len(await store.list_contacts()) == 2
 
 
-async def test_chats_and_latest_thread(any_store):
-    store = any_store
+async def test_chats_and_latest_thread(store):
+
     await store.upsert_chat(
         "c1",
         "u",
@@ -120,8 +120,8 @@ async def test_chats_and_latest_thread(any_store):
     assert (await store.threads_for_user("u"))[0]["open"] is False
 
 
-async def test_members(any_store):
-    store = any_store
+async def test_members(store):
+
     assert await store.member_name("m1") is None
     await store.set_member_names({"m1": "Rafael"})
     assert await store.member_name("m1") == "Rafael"

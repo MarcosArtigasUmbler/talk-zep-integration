@@ -1,7 +1,9 @@
-"""Configuracao dos testes: sem rede, sem Zep real, sem worker.
+"""Configuracao dos testes: sem Zep real, sem worker, MongoDB real.
 
-O Store roda em SQLite (memoria) sempre e, se ``MONGODB_TEST_URI`` estiver
-definido, tambem em MongoDB, num banco descartavel criado por sessao.
+Nao ha banco em memoria: por decisao do projeto o Store e MongoDB em todos os
+ambientes. Os testes usam a URI de ``MONGODB_TEST_URI`` ou, na falta, a
+``MONGODB_URI`` do ``.env``, sempre num banco descartavel criado por sessao
+(``talk_zep_test_<hex>``) e apagado no fim.
 """
 
 from __future__ import annotations
@@ -13,16 +15,26 @@ from types import SimpleNamespace
 
 import pytest
 import pytest_asyncio
+from dotenv import dotenv_values
 from zep_cloud.core.api_error import ApiError
+
+_ENV = dotenv_values(".env")
+TEST_DB = f"talk_zep_test_{uuid.uuid4().hex[:8]}"
+MONGODB_URI = (
+    os.getenv("MONGODB_TEST_URI") or os.getenv("MONGODB_URI") or _ENV.get("MONGODB_URI") or ""
+)
+if not MONGODB_URI:
+    raise SystemExit("testes precisam de MONGODB_TEST_URI ou MONGODB_URI (no ambiente ou .env)")
 
 os.environ.update(
     {
         "ZEP_API_KEY": "test-key",
         "ZEP_ORG_GRAPH_ID": "umbler_teste",
         "WEBHOOK_TOKEN": "segredo",
-        "STORE_BACKEND": "sqlite",
-        "DATABASE_PATH": ":memory:",
-        "MONGODB_URI": "",
+        "MONGODB_URI": MONGODB_URI,
+        "MONGODB_USERNAME": os.getenv("MONGODB_USERNAME") or _ENV.get("MONGODB_USERNAME") or "",
+        "MONGODB_PASSWORD": os.getenv("MONGODB_PASSWORD") or _ENV.get("MONGODB_PASSWORD") or "",
+        "MONGODB_DB": TEST_DB,
         "START_WORKER": "false",
         "MEMBERS_FILE": "",
         "LOG_LEVEL": "WARNING",
@@ -30,11 +42,10 @@ os.environ.update(
 )
 
 from app.config import Settings, get_settings
-from app.pipeline.store import SQLiteStore, Store
+from app.pipeline.store import MongoStore, create_store
 from app.talk.members import MemberDirectory
 
-MONGODB_TEST_URI = os.getenv("MONGODB_TEST_URI", "")
-STORE_BACKENDS = ["sqlite"] + (["mongodb"] if MONGODB_TEST_URI else [])
+COLLECTIONS = ("events", "messages", "facts", "contacts", "chats", "members")
 
 SAMPLE_EVENT = {
     "Type": "Message",
@@ -168,39 +179,29 @@ def settings() -> Settings:
     return get_settings()
 
 
-async def _open_store(backend: str) -> Store:
-    if backend == "mongodb":
-        from app.pipeline.store.mongo import MongoStore
-
-        s = MongoStore(MONGODB_TEST_URI, f"talk_zep_test_{uuid.uuid4().hex[:8]}")
-    else:
-        s = SQLiteStore(":memory:")
+@pytest_asyncio.fixture(scope="session")
+async def mongo_store() -> MongoStore:
+    """Uma conexao por sessao com o banco descartavel; apagado no fim."""
+    get_settings.cache_clear()
+    s = create_store(get_settings(), database=TEST_DB)
     await s.open()
-    return s
-
-
-async def _drop_store(s: Store) -> None:
-    from app.pipeline.store.mongo import MongoStore
-
-    if isinstance(s, MongoStore) and s._client is not None:
-        await s._client.drop_database(s.database)
+    yield s
+    assert s._client is not None
+    await s._client.drop_database(TEST_DB)
     await s.close()
 
 
-@pytest_asyncio.fixture(params=STORE_BACKENDS)
-async def any_store(request) -> Store:
-    """Roda o teste em cada backend disponivel."""
-    s = await _open_store(request.param)
-    yield s
-    await _drop_store(s)
+@pytest_asyncio.fixture(autouse=True)
+async def clean_db(mongo_store) -> None:
+    """Cada teste comeca com as colecoes vazias (o banco e compartilhado na sessao)."""
+    db = mongo_store._client[TEST_DB]
+    for name in COLLECTIONS:
+        await db[name].delete_many({})
 
 
 @pytest_asyncio.fixture
-async def store() -> Store:
-    """SQLite em memoria: para testes que nao sao sobre o Store em si."""
-    s = await _open_store("sqlite")
-    yield s
-    await s.close()
+async def store(mongo_store) -> MongoStore:
+    return mongo_store
 
 
 @pytest_asyncio.fixture

@@ -28,10 +28,11 @@ python -m scripts.setup_zep
 
 - `app/talk/` -- modelos do webhook (case-insensitive) e normalizacao
 - `app/zep/` -- camada do Zep: usuarios, threads, fatos, conhecimento, leitura, ontologia
-- `app/pipeline/store/` -- Store: interface + MongoDB (producao) + SQLite (dev/testes)
+- `app/pipeline/store/` -- Store: interface + MongoDB (unico backend; sem SQLite, por decisao do usuario)
 - `app/pipeline/` -- worker (fila + retentativa) e handlers (evento -> Zep)
 - `app/api/` -- rotas HTTP
 - `scripts/` -- setup do Zep, carga de conhecimento, backfill (GET only), depuracao
 - `APRENDIZADOS-ZEP.md` (em `../getzap-example`) -- base empirica das decisoes
 
-Testes rodam sem rede e sem Zep (fake em `tests/conftest.py`).
+Testes usam um Zep falso (`tests/conftest.py`) e o MongoDB real do `.env`, num
+banco descartavel `talk_zep_test_<hex>` apagado no fim da sessao.

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from functools import lru_cache
-from typing import Literal
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -23,13 +22,12 @@ class Settings(BaseSettings):
     ingest_group_chats: bool = False
     ingest_private_notes: bool = True
 
-    # --- Persistencia --------------------------------------------------------
-    store_backend: Literal["auto", "mongodb", "sqlite"] = "auto"
-    """``auto`` usa MongoDB quando MONGODB_URI esta definido; senao SQLite."""
-    mongodb_uri: str = ""
+    # --- Persistencia (MongoDB em todos os ambientes) ------------------------
+    mongodb_uri: str
+    mongodb_username: str = ""
+    mongodb_password: str = ""
+    """Opcionais: usados so se a URI nao trouxer credenciais embutidas."""
     mongodb_db: str = "talk_zep"
-    database_path: str = "data/talk_zep.sqlite3"
-    """Arquivo do SQLite (desenvolvimento e testes)."""
 
     # --- Fila ----------------------------------------------------------------
     workers: int = 4

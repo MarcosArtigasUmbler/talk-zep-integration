@@ -1,6 +1,8 @@
-"""Persistencia local: MongoDB em producao, SQLite em desenvolvimento e testes."""
+"""Persistencia local da integracao: MongoDB, em todos os ambientes."""
 
 from __future__ import annotations
+
+from urllib.parse import quote_plus
 
 from app.config import Settings
 from app.pipeline.store.base import (
@@ -15,21 +17,28 @@ from app.pipeline.store.base import (
     fact_key,
     now_iso,
 )
-from app.pipeline.store.sqlite import SQLiteStore
+from app.pipeline.store.mongo import MongoStore
 
 
-def create_store(settings: Settings) -> Store:
-    """Escolhe o backend: ``STORE_BACKEND`` ou, em ``auto``, Mongo se houver URI."""
-    backend = settings.store_backend
-    if backend == "auto":
-        backend = "mongodb" if settings.mongodb_uri else "sqlite"
-    if backend == "mongodb":
-        if not settings.mongodb_uri:
-            raise ValueError("STORE_BACKEND=mongodb exige MONGODB_URI")
-        from app.pipeline.store.mongo import MongoStore
+def mongodb_uri_with_credentials(uri: str, username: str, password: str) -> str:
+    """Injeta usuario/senha na URI quando ela vem sem credenciais.
 
-        return MongoStore(settings.mongodb_uri, settings.mongodb_db)
-    return SQLiteStore(settings.database_path)
+    ``mongodb+srv://host/...`` + MONGODB_USERNAME/PASSWORD -> ``mongodb+srv://u:p@host/...``.
+    Se a URI ja tem ``@`` (credenciais embutidas) ou nao ha usuario, volta intacta.
+    """
+    if not username or "://" not in uri:
+        return uri
+    scheme, rest = uri.split("://", 1)
+    if "@" in rest.split("/", 1)[0]:
+        return uri
+    return f"{scheme}://{quote_plus(username)}:{quote_plus(password)}@{rest}"
+
+
+def create_store(settings: Settings, *, database: str | None = None) -> MongoStore:
+    uri = mongodb_uri_with_credentials(
+        settings.mongodb_uri, settings.mongodb_username, settings.mongodb_password
+    )
+    return MongoStore(uri, database or settings.mongodb_db)
 
 
 __all__ = [
@@ -40,9 +49,10 @@ __all__ = [
     "STATUS_PROCESSING",
     "STATUS_RETRY",
     "STATUS_SKIPPED",
-    "SQLiteStore",
+    "MongoStore",
     "Store",
     "create_store",
     "fact_key",
+    "mongodb_uri_with_credentials",
     "now_iso",
 ]

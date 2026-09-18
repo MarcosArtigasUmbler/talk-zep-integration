@@ -73,15 +73,15 @@ O Store guarda o que o Zep não guarda por nós: diário de eventos
 (idempotência e fila durável), mensagens e fatos já enviados, ficha e tags do
 contato, chat → thread com setor e atendente atuais, e nomes de atendentes.
 
-| Backend | Quando | Configuração |
-|---|---|---|
-| **MongoDB** | produção | `MONGODB_URI` (e `MONGODB_DB`, padrão `talk_zep`) |
-| SQLite | desenvolvimento e testes | `DATABASE_PATH` |
+É **MongoDB em todos os ambientes**, sem alternativa local: `MONGODB_URI`
+(com credenciais embutidas, ou `MONGODB_USERNAME`/`MONGODB_PASSWORD` à parte)
+e `MONGODB_DB` (padrão `talk_zep`). Coleções: `events`, `messages`, `facts`,
+`contacts`, `chats`, `members`, com o identificador natural em `_id`. A
+interface está em `app/pipeline/store/base.py`.
 
-`STORE_BACKEND=auto` escolhe MongoDB se houver URI. As duas implementações
-seguem a mesma interface (`app/pipeline/store/base.py`) e o mesmo conjunto de
-testes de contrato (`tests/test_store.py`, que também roda contra o Mongo
-quando `MONGODB_TEST_URI` está definido).
+Os testes usam a mesma instância, num banco descartável `talk_zep_test_<hex>`
+criado no início da sessão e apagado no fim. Para apontá-los a outra
+instância, defina `MONGODB_TEST_URI`.
 
 O Talk não assina o webhook. Cadastre a URL como
 `https://seu-host/webhooks/talk?token=<WEBHOOK_TOKEN>` (ou envie o header
@@ -111,8 +111,9 @@ a API:
 uvicorn app.main:app --host 0.0.0.0 --port 8000
 ```
 
-Documentação interativa em `/docs`. Rode os testes com `pytest -q` (não usam
-rede nem o Zep real).
+Documentação interativa em `/docs`. Rode os testes com `pytest -q`: não usam o
+Zep real (há um fake em `tests/conftest.py`), mas precisam do MongoDB do
+`.env`, onde criam e apagam um banco descartável.
 
 ## Endpoints
 
@@ -234,7 +235,7 @@ app/
   talk/models.py        webhook do Talk (case-insensitive, campos do BasicChatModel)
   talk/normalize.py     Talk -> Zep: ids, papéis, texto de cada tipo de mensagem
   talk/members.py       nome dos atendentes (cache, arquivo, GET opcional)
-  pipeline/store/       Store: base.py (interface), mongo.py (produção), sqlite.py (dev/testes)
+  pipeline/store/       Store: base.py (interface) e mongo.py (MongoDB, todos os ambientes)
   pipeline/worker.py    fila + retentativa
   pipeline/handlers.py  evento -> escritas no Zep
   zep/users.py          user.add / update
@@ -245,7 +246,7 @@ app/
   zep/ontology.py       tipos de entidade/aresta + drift check
   zep/instructions.py   instruções de idioma/domínio
 scripts/                setup_zep, load_knowledge, backfill_talk, replay_events, show_contact
-tests/                  sem rede; Zep falso em conftest.py
+tests/                  Zep falso em conftest.py; MongoDB real num banco descartável
 knowledge/              arquivos de conhecimento da Umbler
 ```
 
@@ -259,8 +260,7 @@ Container Docker com **um único processo** e MongoDB como Store:
 - Uma réplica só, por enquanto. O diário no Mongo já é compartilhável; para
   várias réplicas falta apenas trocar a fila em memória por uma reivindicação
   atômica no Mongo (`findOneAndUpdate` de `pending` para `processing`).
-- Sem `MONGODB_URI` a aplicação cai para SQLite em `data/`, que só serve para
-  desenvolvimento.
+- `MONGODB_URI` é obrigatória: sem ela a aplicação não sobe.
 
 ## Limitações conhecidas
 
