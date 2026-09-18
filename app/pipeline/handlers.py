@@ -137,6 +137,10 @@ class EventHandler:
             await self.store.mark_messages([(msg.id, event_id, thread_id)])
             return f"mensagem {msg.type_lower} sem conteudo util"
 
+        if normalized.source == "bot" and not self.settings.ingest_bot_messages:
+            await self.store.mark_messages([(msg.id, event_id, thread_id)])
+            return "mensagem de bot ignorada (INGEST_BOT_MESSAGES=false)"
+
         if normalized.is_private:
             if not self.settings.ingest_private_notes:
                 await self.store.mark_messages([(msg.id, event_id, thread_id)])

@@ -184,6 +184,35 @@ async def test_internal_and_group_chats_are_skipped(store, settings, members, fa
     assert fake_zep.calls == []
 
 
+async def test_bot_messages_are_skipped_by_default(store, settings, members, fake_zep):
+    handler = EventHandler(store, settings, members)
+    bot = sample_event(
+        message={
+            "Id": "msg_bot",
+            "EventAtUTC": "2026-09-18T12:00:00Z",
+            "Content": "Olá! Escolha uma opção: 1) Vendas 2) Suporte",
+            "MessageType": "Text",
+            "Source": "Bot",
+            "IsPrivate": False,
+            "BotInstance": {"Id": "b1", "Name": "Triagem"},
+        }
+    )
+    out = await handle(handler, bot)
+    assert "bot ignorada" in out.summary
+    assert fake_zep.of("thread.add_messages") == []
+    assert await store.message_seen("msg_bot")
+
+    on = settings.model_copy(update={"ingest_bot_messages": True})
+    out = await handle(
+        EventHandler(store, on, members),
+        sample_event(
+            EventId="e2", message={**bot["Payload"]["Content"]["LastMessage"], "Id": "msg_bot2"}
+        ),
+    )
+    m = fake_zep.of("thread.add_messages")[-1]["messages"][0]
+    assert (m.role, m.name) == ("assistant", "Triagem")
+
+
 async def test_private_notes_can_be_disabled(store, settings, members, fake_zep):
     settings = settings.model_copy(update={"ingest_private_notes": False})
     handler = EventHandler(store, settings, members)

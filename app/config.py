@@ -23,6 +23,9 @@ class Settings(BaseSettings):
     """X-API-Key das rotas de leitura/admin. Vazio desliga a verificacao (so dev)."""
     ingest_group_chats: bool = False
     ingest_private_notes: bool = True
+    ingest_bot_messages: bool = False
+    """Mensagens do bot (saudacao, menus) sao ~metade do volume e nao sao memoria.
+    Cada uma viraria um episodio: gasta credito do Zep e gera fato-ruido."""
 
     # --- Persistencia (MongoDB em todos os ambientes) ------------------------
     mongodb_uri: str

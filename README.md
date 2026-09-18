@@ -58,6 +58,12 @@ mudou), o estado do chat e o atendente responsável (só se mudou). Conversas
 internas entre membros são ignoradas; grupos ficam fora por padrão
 (`INGEST_GROUP_CHATS`).
 
+**Mensagens do bot ficam fora por padrão** (`INGEST_BOT_MESSAGES=false`). Nos
+primeiros webhooks reais elas foram quase metade do volume: saudações e menus
+que não são memória sobre o cliente, mas viram episódio, gastam crédito do Zep
+e geram fatos-ruído. As respostas do contato ao bot continuam entrando, com o
+texto da opção escolhida.
+
 ### Contrato do webhook e a fila
 
 O Talk exige **2xx em menos de 5 segundos**, reenvia até 2 vezes com o mesmo
@@ -370,7 +376,8 @@ Variáveis (aba Variables), todas opcionais: `EDGE_MODE` (`caddy` ou `port`),
 `APP_PORT` (`8081`), `APP_DOMAIN` (`talk-zep-integration.artigas.app`),
 `ACME_EMAIL` (e-mail para avisos do Let's Encrypt), `ZEP_ORG_GRAPH_ID`
 (`umbler_kb`), `MONGODB_DB` (`talk_zep`), `LOG_LEVEL`, `WORKERS`,
-`INGEST_GROUP_CHATS`, `INGEST_PRIVATE_NOTES`, `ZEP_STRICT_ONTOLOGY`.
+`INGEST_GROUP_CHATS`, `INGEST_PRIVATE_NOTES`, `INGEST_BOT_MESSAGES`,
+`ZEP_STRICT_ONTOLOGY`.
 
 Depois do primeiro deploy, a URL a cadastrar no Talk é
 `https://talk-zep-integration.artigas.app/webhooks/talk?token=<WEBHOOK_TOKEN>`
