@@ -1,0 +1,7 @@
+zep-cloud==3.28.0
+fastapi==0.141.1
+uvicorn[standard]==0.53.0
+pydantic-settings==2.15.0
+python-dotenv==1.2.3
+aiosqlite==0.22.1
+httpx==0.28.1
